@@ -1,0 +1,75 @@
+# =============================================================================
+# Clembot .gitignore - Clean Repository Configuration for Git & GitHub
+# =============================================================================
+
+# --- Secrets & Sensitive Data (NEVER COMMIT) ---
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.cert
+
+# --- Logs & Runtime State ---
+*.log
+clembot.log
+.deps_installed
+app_index.json
+*.bak
+*.tmp
+*.temp
+
+# --- Python Bytecode & Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- Python Environments & Packages ---
+.venv/
+venv/
+env/
+ENV/
+dist/
+build/
+*.egg-info/
+*.egg
+eggs/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# --- VS Code Extension Build & Dependencies ---
+node_modules/
+**/node_modules/
+out/
+**/out/
+*.vsix
+.vscode-test/
+
+# --- IDE & Editors ---
+.vscode/*
+!.vscode/settings.json.example
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- Reference Repositories (Third-party macOS code) ---
+reference_majesty/
+
+# --- Windows & OS Files ---
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store

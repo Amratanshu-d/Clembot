@@ -1,0 +1,67 @@
+from typing import Optional
+from app.ai.base import AIProvider
+from app.ai.prompt_builder import prompt_builder
+from app.config.settings import settings
+from app.core.models import AgentPlan, ScreenContext
+from app.logging.logger import logger
+
+
+class GeminiProvider(AIProvider):
+    """
+    Google Gemini cloud LLM provider using the google-genai SDK.
+    Features structured tool calling, dynamic prompt building,
+    strict Pydantic schema validation, and automatic 1-retry self-correction.
+    """
+
+    def is_available(self) -> bool:
+        return bool(settings.gemini_api_key and settings.gemini_api_key.strip())
+
+    def plan(self, command: str, context: ScreenContext) -> AgentPlan:
+        if not self.is_available():
+            logger.error("Gemini AI provider is selected but GEMINI_API_KEY is not configured in .env! Falling back to local heuristic.")
+            from app.ai.local_heuristic import LocalHeuristicPlanner
+            return LocalHeuristicPlanner().plan(command, context)
+
+        try:
+            from google import genai
+            client = genai.Client(api_key=settings.gemini_api_key)
+
+            system_instruction = prompt_builder.build_system_instruction()
+            user_prompt = prompt_builder.build_user_prompt(command, context)
+
+            # Turn 1: Generate plan
+            response = client.models.generate_content(
+                model=settings.ai_model_name,
+                contents=user_prompt,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    temperature=0.3
+                )
+            )
+
+            raw_text = response.text.strip() if response.text else "{}"
+
+            try:
+                return prompt_builder.parse_and_validate(raw_text)
+            except ValueError as val_err:
+                logger.warning(f"Gemini output schema validation failed ({val_err}). Triggering 1-retry self-correction...")
+
+                # Turn 2: Retry with validation feedback
+                retry_prompt = prompt_builder.build_retry_prompt(user_prompt, str(val_err), raw_text)
+                retry_response = client.models.generate_content(
+                    model=settings.ai_model_name,
+                    contents=retry_prompt,
+                    config=genai.types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                        temperature=0.1
+                    )
+                )
+                retry_text = retry_response.text.strip() if retry_response.text else "{}"
+                return prompt_builder.parse_and_validate(retry_text)
+
+        except Exception as e:
+            logger.error(f"Gemini planner execution error: {e}. Falling back to local heuristic.")
+            from app.ai.local_heuristic import LocalHeuristicPlanner
+            return LocalHeuristicPlanner().plan(command, context)

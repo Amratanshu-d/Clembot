@@ -1,0 +1,43 @@
+{
+  "name": "clembot-vscode",
+  "displayName": "Clembot Voice Code Editor",
+  "description": "First-class VS Code bridge for the Clembot Windows Voice Assistant",
+  "version": "1.0.0",
+  "publisher": "clembot",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "clembot.connect",
+        "title": "Clembot: Connect to Voice Assistant"
+      },
+      {
+        "command": "clembot.disconnect",
+        "title": "Clembot: Disconnect from Voice Assistant"
+      },
+      {
+        "command": "clembot.status",
+        "title": "Clembot: Check Bridge Status"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
+  }
+}
