@@ -514,7 +514,16 @@ class WindowsAppCatalog:
                 raise RuntimeError(f"Could not open {app_name}: {e2}")
 
     def close_app(self, app_name: str) -> str:
-        """Finds windows matching the app name or process name and sends WM_CLOSE."""
+        """Finds windows matching the app name or process name and gracefully closes them."""
+        # 0. If user asked to close a file or editor tab, delegate to vscode_adapter
+        check_name = (app_name or "").strip().lower()
+        if check_name in ["this file", "the file", "file", "current file", "active file", "file in vscode", "vscode file", "file vscode"] or re.search(r'\.[a-zA-Z0-9]{1,5}$', check_name):
+            try:
+                from app.editor.vscode_adapter import vscode_adapter
+                return vscode_adapter.close_file(app_name if re.search(r'\.[a-zA-Z0-9]{1,5}$', check_name) else None)
+            except Exception as e:
+                logger.warning(f"Error redirecting close_app to close_file: {e}")
+
         if not HAS_WIN32:
             return f"Closed {app_name}."
 
@@ -529,6 +538,17 @@ class WindowsAppCatalog:
                 for p in entry.get("process_names", []):
                     proc_names.add(p.lower())
 
+        # 1. Native Windows graceful close via taskkill (sends WM_CLOSE to process windows)
+        for p in list(proc_names):
+            if p.endswith(".exe"):
+                try:
+                    res = subprocess.run(["taskkill", "/IM", p], capture_output=True, text=True, timeout=3.0)
+                    if res.returncode == 0:
+                        closed_any = True
+                except Exception:
+                    pass
+
+        # 2. Window enumeration via win32gui
         def _close_callback(hwnd, _):
             nonlocal closed_any
             try:
@@ -560,13 +580,16 @@ class WindowsAppCatalog:
         if closed_any:
             return f"Closed {app_name}."
 
-        # Fallback: check running processes without a visible window
+        # 3. Fallback: check running processes without a visible window
         for proc in psutil.process_iter(["name", "pid"]):
             try:
                 if proc.info["name"] and proc.info["name"].lower() in proc_names:
                     proc.terminate()
-                    return f"Closed {app_name}."
+                    closed_any = True
             except Exception:
                 pass
+
+        if closed_any:
+            return f"Closed {app_name}."
 
         return f"No open windows found for '{app_name}'."

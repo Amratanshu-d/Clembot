@@ -157,7 +157,7 @@ class ConversationalMemory:
             file_str = str(self.last_file)
             resolved = re.sub(r'\b(?:this|that|same)\s+file\b', lambda m: f"file {file_str}", resolved, flags=re.IGNORECASE)
             # Replace " it " with full file path when referencing an operation
-            resolved = re.sub(r'\b(delete|open|rename|copy|move|run|inspect|clean|format)\s+it\b', lambda m: f"{m.group(1)} {file_str}", resolved, flags=re.IGNORECASE)
+            resolved = re.sub(r'\b(delete|open|close|rename|copy|move|run|inspect|clean|format)\s+it\b', lambda m: f"{m.group(1)} {file_str}", resolved, flags=re.IGNORECASE)
 
         # 4. Resolve "the other file"
         if len(self.recent_modified_files) >= 2 and self.last_file:

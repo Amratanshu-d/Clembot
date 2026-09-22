@@ -146,6 +146,35 @@ async function handleCommand(cmd: any) {
                 break;
             }
 
+            case 'close_file':
+            case 'close_active_file': {
+                const filePath = params.file_path;
+                let closed = false;
+                if (filePath && vscode.window.tabGroups) {
+                    const normTarget = filePath.toLowerCase().replace(/\\/g, '/');
+                    const baseTarget = normTarget.split('/').pop() || normTarget;
+                    for (const tabGroup of vscode.window.tabGroups.all) {
+                        for (const tab of tabGroup.tabs) {
+                            if (tab.input instanceof vscode.TabInputText) {
+                                const tabPath = tab.input.uri.fsPath.toLowerCase().replace(/\\/g, '/');
+                                if (tabPath === normTarget || tabPath.endsWith(normTarget) || tab.label.toLowerCase() === baseTarget) {
+                                    await vscode.window.tabGroups.close(tab);
+                                    closed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (closed) break;
+                    }
+                }
+                if (!closed) {
+                    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                }
+                result.success = true;
+                result.message = filePath ? `Closed ${filePath} in VS Code.` : 'Closed active file in VS Code.';
+                break;
+            }
+
             case 'apply_edit': {
                 if (editor) {
                     const startLine = Math.max(1, params.start_line || 1) - 1;

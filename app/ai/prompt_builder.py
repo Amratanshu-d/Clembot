@@ -27,7 +27,7 @@ class AIPromptBuilder:
         "web_search", "open_url", "browser_new_tab", "browser_close_tab",
         "browser_next_tab", "browser_prev_tab", "browser_reload",
         # VS Code Navigation
-        "vscode_jump_line", "vscode_open_file", "vscode_read_line",
+        "vscode_jump_line", "vscode_open_file", "vscode_close_file", "vscode_read_line",
         # VS Code Code Editing (legacy token-based, still supported)
         "vscode_edit", "vscode_run_code", "vscode_undo",
         # VS Code Targeted Semantic Patch (NEW — preferred for code modifications)
@@ -92,6 +92,7 @@ Standard Windows/File/Browser actions:
 VS Code Navigation:
   vscode_jump_line (line_number)
   vscode_open_file (path)
+  vscode_close_file (path) — close active file or specified file in VS Code
   vscode_read_line (line_number)
 
 VS Code Code Inspection:

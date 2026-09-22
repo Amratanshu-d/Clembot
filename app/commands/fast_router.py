@@ -60,8 +60,21 @@ class FastCommandRouter:
 
             # Browser tabs
             "new tab": AgentPlan(reply="New tab.", actions=[AgentAction(type="browser_new_tab")]),
-            "close tab": AgentPlan(reply="Closing tab.", actions=[AgentAction(type="browser_close_tab")]),
+            "close tab": AgentPlan(reply="Closing tab.", actions=[AgentAction(type="vscode_close_file")]),
+            "close this tab": AgentPlan(reply="Closing tab.", actions=[AgentAction(type="vscode_close_file")]),
+            "close current tab": AgentPlan(reply="Closing current tab.", actions=[AgentAction(type="vscode_close_file")]),
+            "close active tab": AgentPlan(reply="Closing active tab.", actions=[AgentAction(type="vscode_close_file")]),
             "next tab": AgentPlan(reply="Next tab.", actions=[AgentAction(type="browser_next_tab")]),
+
+            # File / Editor tab closing
+            "close this file": AgentPlan(reply="Closing active file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
+            "close the file": AgentPlan(reply="Closing active file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
+            "close file": AgentPlan(reply="Closing active file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
+            "close active file": AgentPlan(reply="Closing active file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
+            "close current file": AgentPlan(reply="Closing active file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
+            "close file in vscode": AgentPlan(reply="Closing file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
+            "close vscode file": AgentPlan(reply="Closing file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
+            "close file vscode": AgentPlan(reply="Closing file in VS Code.", actions=[AgentAction(type="vscode_close_file")]),
             "switch tab": AgentPlan(reply="Next tab.", actions=[AgentAction(type="browser_next_tab")]),
             "previous tab": AgentPlan(reply="Previous tab.", actions=[AgentAction(type="browser_prev_tab")]),
             "reopen tab": AgentPlan(reply="Reopened tab.", actions=[AgentAction(type="browser_reopen_tab")]),
@@ -412,11 +425,57 @@ class FastCommandRouter:
                 actions=[AgentAction(type="open_app", app=target_app)]
             )
 
-        # 16. Close app
-        # e.g. "Close Chrome", "Close Notepad"
+        # 16. Close file / editor tab
+        # e.g. "close this file", "close file in vscode", "close main.py", "close file calc.py"
+        close_file_explicit = re.search(
+            r'^(?:close|quit|exit)\s+(?:the\s+|this\s+|current\s+|active\s+)?(?:file|document)(?:\s+(?:in|on|from)\s+vscode)?(?:\s+(?:named|called)\s+(.*?))?$',
+            lower
+        )
+        if close_file_explicit:
+            named = close_file_explicit.group(1)
+            target = named.strip() if named else None
+            return AgentPlan(
+                reply=f"Closing {target or 'active file'} in VS Code.",
+                actions=[AgentAction(type="vscode_close_file", path=target)]
+            )
+
+        close_named_file = re.search(
+            r'^(?:close|quit|exit)\s+(?:file\s+)?([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]{1,5})$',
+            lower
+        )
+        if close_named_file:
+            fname = close_named_file.group(1).strip()
+            return AgentPlan(
+                reply=f"Closing {fname} in VS Code.",
+                actions=[AgentAction(type="vscode_close_file", path=fname)]
+            )
+
+        close_vsc_file = re.search(
+            r'^(?:close|quit|exit)\s+(?:vscode\s+file|file\s+vscode|file\s+in\s+vscode|active\s+editor)$',
+            lower
+        )
+        if close_vsc_file:
+            return AgentPlan(
+                reply="Closing file in VS Code.",
+                actions=[AgentAction(type="vscode_close_file")]
+            )
+
+        # 17. Close app
+        # e.g. "Close Chrome", "Close Notepad", "Close VS Code"
         close_app = re.search(r'^(?:close|quit|exit)\s+(.*?)$', lower)
         if close_app:
             target_app = close_app.group(1).strip()
+            # If target looks like a file name
+            if re.search(r'\.[a-zA-Z0-9]{1,5}$', target_app):
+                return AgentPlan(
+                    reply=f"Closing {target_app} in VS Code.",
+                    actions=[AgentAction(type="vscode_close_file", path=target_app)]
+                )
+            if target_app in ["this file", "the file", "file", "current file", "active file", "file in vscode", "vscode file", "file vscode"]:
+                return AgentPlan(
+                    reply="Closing file in VS Code.",
+                    actions=[AgentAction(type="vscode_close_file")]
+                )
             return AgentPlan(
                 reply=f"Closing {target_app}.",
                 actions=[AgentAction(type="close_app", app=target_app)]

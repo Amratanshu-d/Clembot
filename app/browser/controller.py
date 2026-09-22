@@ -59,16 +59,22 @@ class BrowserController:
         browser_name = preferred_browser or settings.default_browser
         browser_name = browser_name.lower().strip()
 
+        def _resolve_target(name: str) -> Optional[str]:
+            res = self.apps.find_executable(name)
+            if res:
+                return res[0] if isinstance(res, tuple) else res
+            return None
+
         if browser_name in ["chrome", "google chrome"]:
-            return self.apps.find_executable("chrome")
+            return _resolve_target("chrome")
         elif browser_name in ["edge", "microsoft edge"]:
-            return self.apps.find_executable("edge")
+            return _resolve_target("edge")
         elif browser_name in ["firefox", "mozilla firefox"]:
-            return self.apps.find_executable("firefox")
+            return _resolve_target("firefox")
         else:
             # Fallback to any installed browser
             for candidate in ["chrome", "edge", "firefox"]:
-                exe = self.apps.find_executable(candidate)
+                exe = _resolve_target(candidate)
                 if exe:
                     return exe
         return None

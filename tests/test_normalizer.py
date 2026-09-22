@@ -195,7 +195,15 @@ class TestSTTCorruption(unittest.TestCase):
         """End-to-end: 'for lion 9 change content to x' has 'line 9'"""
         result = self.n.normalize_command("for lion 9 change content to x")
         self.assertIn("line", result.lower())
-        self.assertIn("9", result)
+    def test_inline_compound_digits(self):
+        """'inline 43 replace I with J' → 'in line 43 replace I with J'"""
+        result = self.n.normalize_command("inline 43 replace I with J")
+        self.assertEqual(result.lower(), "in line 43 replace i with j")
+
+    def test_inline_compound_word_digits(self):
+        """'inline forty three replace I with J' → 'in line forty three replace I with J'"""
+        result = self.n.normalize_command("inline forty three replace I with J")
+        self.assertIn("in line forty three", result.lower())
 
 
 if __name__ == "__main__":

@@ -123,6 +123,23 @@ class LocalHeuristicPlanner(AIProvider):
                 actions=[AgentAction(type="find_file", query=f"*.{ext}", scope=loc)]
             )
 
+        # Guard: If command has coding or editor intent (e.g. line numbers, edit verbs),
+        # DO NOT fall back to Google Search.
+        code_markers = [
+            r'\bline\s*\d+\b',
+            r'\binline\s*\d+\b',
+            r'\bline\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b',
+            r'\b(?:replace|overwrite|rewrite|delete\s+line|remove\s+line|comment\s+line|uncomment\s+line|insert\s+after|insert\s+before)\b',
+        ]
+        if any(re.search(pat, lower) for pat in code_markers):
+            logger.info(f"Local heuristic detected unparsed code edit attempt: '{command}'. Preventing web search fallback.")
+            line_m = re.search(r'\b(?:line|inline)\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b', lower)
+            line_hint = f" on line {line_m.group(1)}" if line_m else ""
+            return AgentPlan(
+                reply=f"I heard a code edit command{line_hint}, but couldn't parse the target text. For example, say: 'in line 36 replace old with new' or 'line 36 replace with new content'.",
+                actions=[]
+            )
+
         # Default fallback to web search on Google
         logger.info(f"Local heuristic falling back to web search for: '{command}'")
         search_query = re.sub(r'^(?:can\s+you\s+|please\s+|tell\s+me\s+)?', '', command, flags=re.IGNORECASE).strip()

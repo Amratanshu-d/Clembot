@@ -431,6 +431,54 @@ class VSCodeAdapter(EditorAdapter):
             logger.error(f"Failed to open {file_path} in VS Code: {e}")
             return False
 
+    def close_file(self, file_path: Optional[str] = None) -> str:
+        """
+        Closes the active editor tab (or a specific file tab) in VS Code.
+        Layer 1: IPC extension command if connected.
+        Layer 2: Keyboard shortcut (Ctrl+W) via Windows input automation.
+        Also clears cached file reference and updates conversational memory.
+        """
+        active_f = self.get_active_file()
+        display_name = Path(file_path).name if file_path else (active_f.name if active_f else "active file")
+
+        closed = False
+
+        # Layer 1: IPC extension
+        if self.is_available():
+            import uuid
+            res = _ipc_post("/vscode/enqueue_command", {
+                "id": str(uuid.uuid4()),
+                "action": "close_file",
+                "params": {"file_path": file_path}
+            })
+            if res.get("success"):
+                closed = True
+                logger.info(f"Closed {display_name} via VS Code IPC extension.")
+
+        # Layer 2: Keyboard automation fallback (Ctrl+W)
+        if not closed:
+            try:
+                from app.automation.input_adapter import WindowsInputAdapter
+                WindowsInputAdapter.hotkey(["ctrl", "w"])
+                closed = True
+                logger.info(f"Closed {display_name} via Ctrl+W hotkey.")
+            except Exception as e:
+                logger.warning(f"Failed to send Ctrl+W: {e}")
+
+        # Clear cached file reference
+        VSCodeAdapter._cached_file = None
+        try:
+            from app.memory.conversation import conversation_memory
+            if conversation_memory.last_file:
+                conversation_memory.last_file = None
+        except Exception:
+            pass
+
+        if closed:
+            return f"Closed {display_name} in VS Code."
+        else:
+            return f"Could not close {display_name}."
+
     def apply_edit(
         self,
         file_path: Path,

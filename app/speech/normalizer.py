@@ -125,6 +125,7 @@ class SpeechNormalizer:
         "go too": "go to",
 
         # "line" variants  (e.g. "lion 32" → "line 32")
+        "in-line": "in line",
         "lion": "line",
         "lyine": "line",
         "lyne": "line",
@@ -332,6 +333,8 @@ class SpeechNormalizer:
              '1': 'one', '2': 'two', '3': 'three', '4': 'four', '5': 'five',
              '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
          }.get(m.group(2), m.group(2))),
+        # "inline" joined before line number: "inline 43" → "in line 43", "inline43" → "in line 43"
+        (re.compile(r'\binline\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b', re.IGNORECASE), r'in line \1'),
     ]
 
     @classmethod

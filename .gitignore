@@ -61,9 +61,6 @@ out/
 *.sublime-project
 *.sublime-workspace
 
-# --- Reference Repositories (Third-party macOS code) ---
-reference_majesty/
-
 # --- Windows & OS Files ---
 Thumbs.db
 Thumbs.db:encryptable

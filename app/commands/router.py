@@ -138,7 +138,12 @@ class ActionRouter:
                 return ActionResult(action_id=action.id, action_type="web_search", success=True, message=f"Couldn't find '{target}' locally. {search_msg}")
 
             elif act_type == "close_app":
-                msg = self.apps.close_app(action.app)
+                app_target = (action.app or "").strip()
+                # If target is actually a file, route directly to close_file
+                if app_target.lower() in ["this file", "the file", "file", "current file", "active file", "file in vscode", "vscode file", "file vscode"] or re.search(r'\.[a-zA-Z0-9]{1,5}$', app_target):
+                    msg = self.vscode.close_file(app_target if re.search(r'\.[a-zA-Z0-9]{1,5}$', app_target) else None)
+                else:
+                    msg = self.apps.close_app(app_target)
                 return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
 
             elif act_type == "window_minimize":
@@ -257,6 +262,10 @@ class ActionRouter:
                 target_p = WindowsPathResolver.resolve(action.path)
                 success = self.vscode.open_file(target_p)
                 return ActionResult(action_id=action.id, action_type=act_type, success=success, message=f"Opened '{target_p.name}' in VS Code.")
+
+            elif act_type == "vscode_close_file":
+                msg = self.vscode.close_file(action.path)
+                return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
 
             elif act_type == "vscode_run_code":
                 success = self.vscode.run_code()

@@ -46,7 +46,7 @@ class ClembotSettings(BaseModel):
     mic_device_index: Optional[int] = None
     speech_energy_threshold: int = 300
     speech_dynamic_energy_threshold: bool = True
-    speech_pause_threshold: float = 0.8
+    speech_pause_threshold: float = 1.1
     speech_timeout: float = 5.0
     speech_phrase_time_limit: float = 12.0
     

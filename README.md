@@ -252,8 +252,7 @@ clembot/
 ├── requirements.txt               # Verified dependency list
 ├── .env.example                   # Configuration template
 ├── INSTALLATION.md                # Installation guide
-├── TESTING.md                     # Testing instructions
-└── REFERENCE_REPO_ANALYSIS.md     # Comparison with macOS reference repo
+└── TESTING.md                     # Testing instructions
 ```
 
 ---
