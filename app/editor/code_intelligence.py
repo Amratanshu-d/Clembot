@@ -1,5 +1,6 @@
 import ast
 import difflib
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -173,6 +174,157 @@ class CodeIntelligenceEngine:
         )
 
     @classmethod
+    def inspect_active_context(cls, file_path: Path, line_number: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Inspects the active file and extracts the enclosing function/class,
+        signature, and surrounding code window (1-indexed).
+        """
+        if not file_path.is_file():
+            return {"file": str(file_path), "exists": False}
+
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = file_path.read_text(encoding="cp1252", errors="replace")
+
+        lines = content.splitlines()
+        total_lines = len(lines)
+        target_line = max(1, min(line_number or 1, total_lines))
+
+        # Context window: up to 15 lines before and after
+        start_win = max(0, target_line - 15)
+        end_win = min(total_lines, target_line + 15)
+        window_lines = lines[start_win:end_win]
+
+        enclosing_symbol = None
+        symbol_type = None
+
+        # If Python, use AST to find enclosing function/class
+        if file_path.suffix.lower() == ".py":
+            try:
+                tree = ast.parse(content)
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        start = getattr(node, "lineno", 0)
+                        end = getattr(node, "end_lineno", start + 20)
+                        if start <= target_line <= end:
+                            enclosing_symbol = node.name
+                            symbol_type = "function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class"
+            except Exception:
+                pass
+
+        # Regex fallback for other languages (JS/TS/C/Go/Java)
+        if not enclosing_symbol:
+            for i in range(target_line - 1, -1, -1):
+                l = lines[i]
+                fn_match = re.search(r'(?:def|function|class|async\s+def|async\s+function)\s+([a-zA-Z_]\w*)', l)
+                if fn_match:
+                    enclosing_symbol = fn_match.group(1)
+                    symbol_type = "function" if "class" not in l else "class"
+                    break
+
+        return {
+            "file": str(file_path),
+            "file_name": file_path.name,
+            "total_lines": total_lines,
+            "target_line": target_line,
+            "enclosing_symbol": enclosing_symbol,
+            "symbol_type": symbol_type,
+            "snippet": "\n".join(window_lines),
+            "start_line": start_win + 1,
+            "end_line": end_win
+        }
+
+    @classmethod
+    def find_symbols_in_workspace(
+        cls,
+        workspace_path: Path,
+        symbol_query: str,
+        max_results: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Searches source files in the workspace for symbol definitions
+        matching symbol_query. Bounded and skips build/cache directories.
+        """
+        if not workspace_path.is_dir():
+            return []
+
+        q = symbol_query.strip().lower()
+        if not q:
+            return []
+
+        # Common code extensions
+        code_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".cs", ".go", ".rs", ".html", ".css"}
+        ignored_dirs = {"node_modules", ".git", ".vscode", "__pycache__", "venv", ".venv", "dist", "build"}
+
+        results: List[Dict[str, Any]] = []
+
+        try:
+            for dirpath, dirnames, filenames in os.walk(str(workspace_path)):
+                dirnames[:] = [d for d in dirnames if d.lower() not in ignored_dirs and not d.startswith(".")]
+
+                for fn in filenames:
+                    p = Path(dirpath) / fn
+                    if p.suffix.lower() not in code_exts:
+                        continue
+
+                    try:
+                        raw = p.read_bytes()
+                        text = raw.decode("utf-8", errors="ignore")
+                    except Exception:
+                        continue
+
+                    lines = text.splitlines()
+                    for idx, line in enumerate(lines, 1):
+                        # Match function/class/variable/route definition
+                        if q in line.lower() and re.search(r'\b(?:def|class|function|const|let|var|route|url|path)\b', line, re.IGNORECASE):
+                            results.append({
+                                "file": str(p),
+                                "file_name": p.name,
+                                "line_number": idx,
+                                "line_content": line.strip()
+                            })
+                            if len(results) >= max_results:
+                                return results
+        except Exception as e:
+            logger.debug(f"Workspace symbol search error: {e}")
+
+        return results
+
+    @classmethod
+    def extract_file_outline(cls, file_path: Path) -> List[str]:
+        """Returns top-level function and class signatures in the file."""
+        if not file_path.is_file():
+            return []
+
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return []
+
+        outline = []
+        if file_path.suffix.lower() == ".py":
+            try:
+                tree = ast.parse(content)
+                for node in tree.body:
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        args = [a.arg for a in node.args.args]
+                        outline.append(f"def {node.name}({', '.join(args)}) [line {node.lineno}]")
+                    elif isinstance(node, ast.ClassDef):
+                        outline.append(f"class {node.name} [line {node.lineno}]")
+                return outline
+            except Exception:
+                pass
+
+        # Regex outline for non-Python or fallback
+        for idx, line in enumerate(content.splitlines(), 1):
+            m = re.search(r'^\s*(?:def|class|function|async\s+def)\s+([a-zA-Z_]\w*\s*\([^)]*\))', line)
+            if m:
+                outline.append(f"{m.group(0).strip()} [line {idx}]")
+
+        return outline
+
+    @classmethod
     def apply_proposal(cls, proposal: CodeEditProposal) -> bool:
         """
         Safely applies a proposal by creating a backup (.bak) first and writing updated code.
@@ -182,7 +334,9 @@ class CodeIntelligenceEngine:
             bak_path = target.with_suffix(target.suffix + ".bak")
             shutil.copy2(target, bak_path)
 
-            target.write_text(proposal.proposed_code, encoding="utf-8")
+            from app.editor.code_patch_engine import code_patch_engine
+            _, eol = code_patch_engine.read_file_with_eol(target)
+            code_patch_engine.write_file_preserving_eol(target, proposal.proposed_code, eol)
             logger.info(f"Successfully applied code edit to {target}. Backup at {bak_path.name}")
             return True
         except Exception as e:

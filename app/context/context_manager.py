@@ -64,7 +64,8 @@ class WindowsContextManager:
             if active_vsc_file:
                 vscode_file = str(active_vsc_file)
             vscode_line = ipc_server.state.cursor_line or None
-            vscode_workspace = ipc_server.state.workspace_folder or None
+            ws = ipc_server.state.workspace_folder or adapter.get_workspace()
+            vscode_workspace = str(ws) if ws else None
         except Exception as e:
             logger.debug(f"VS Code context detection failed: {e}")
 

@@ -47,6 +47,26 @@ class TestCodeEditParser(unittest.TestCase):
         self.assertIsNotNone(r)
         self.assertEqual(r.token, "REPLACE_LINE:7::return None")
 
+    def test_for_line_replace_content(self):
+        r = parse_voice_edit("for line 9 change the content to print(hello)")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.token, "REPLACE_LINE:9::print(hello)")
+
+    def test_change_the_content_in_line(self):
+        r = parse_voice_edit("change the content in line 9 to print(names)")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.token, "REPLACE_LINE:9::print(names)")
+
+    def test_change_line_to(self):
+        r = parse_voice_edit("change line 9 to for item in names:")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.token, "REPLACE_LINE:9::for item in names:")
+
+    def test_for_line_replace_word(self):
+        r = parse_voice_edit("for line 9 replace names with items")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.token, "REPLACE_IN_LINE:9:names::items")
+
     # ----- DELETE LINE -----
     def test_delete_line(self):
         r = parse_voice_edit("delete line 10")

@@ -121,18 +121,48 @@ def parse_voice_edit(command: str) -> Optional[ParsedEditCommand]:
                 summary=f"Deleting lines {s} to {e}."
             )
 
-    # 2. REPLACE WORD/PHRASE IN LINE
+    # 2. REPLACE ENTIRE LINE (Checked before word-replace so "change content in line 9" is not treated as replacing the word "content")
+    # "replace line 4 with x = 0"
+    # "change line 9 to for item in names:"
+    # "change the content in line 9 to print(names)"
+    # "in line 9 change the content to for x in names:"
+    # "for line 9 change the content to print(hello)"
+    # "on line 9 change content to print(names)"
+    line_replace_patterns = [
+        # replace/change line N with/to ...
+        r'^(?:replace|rewrite|overwrite|set|change)\s+(?:(?:the\s+)?entire\s+|(?:the\s+)?whole\s+)?line\s+(\w+)\s+(?:with|to)\s+(.+?)[.!?]*$',
+        # change/replace the content in/of line N to/with ...
+        r'^(?:change|replace|rewrite|set|update)\s+(?:the\s+)?(?:content|code|text)\s+(?:in|of|at|on|for)\s+line\s+(\w+)\s+(?:to|with)\s+(.+?)[.!?]*$',
+        # in/on/at/for line N change/replace [the] [whole line / content / code / text] to/with ...
+        r'^(?:in|on|at|for)\s+line\s+(\w+)\s+(?:change|replace|rewrite|set|update)\s+(?:the\s+)?(?:(?:whole|entire)\s+line|(?:content|code|text))\s+(?:to|with)\s+(.+?)[.!?]*$',
+        # in/on/at/for line N change/set it to ...
+        r'^(?:in|on|at|for)\s+line\s+(\w+)\s+(?:change|set|replace)\s+(?:it\s+)?(?:to|with)\s+(.+?)[.!?]*$',
+    ]
+    for pat in line_replace_patterns:
+        m = re.search(pat, cmd, re.IGNORECASE)
+        if m:
+            ln = _parse_line_number(m.group(1))
+            new_text = m.group(2).strip().rstrip('.!?')
+            if ln and new_text:
+                return ParsedEditCommand(
+                    token=f"REPLACE_LINE:{ln}::{new_text}",
+                    line_number=ln,
+                    summary=f"Replacing line {ln} with: {new_text}"
+                )
+
+    # 3. REPLACE WORD/PHRASE IN LINE
     # "in line 6 replace char with int"
     # "on line 6 change char to int"
     # "at line 6 replace the char keyword with int"
+    # "for line 9 replace names with items"
     # "replace char with int on line 6 / in line 6"
     replace_patterns = [
         # <position> <verb> [the] <old> [keyword/word/text/thing] <connector> <new>
-        r'^(?:in|on|at)\s+line\s+(\w+)\s+(?:replace|change|swap|update)\s+(?:the\s+)?(.+?)\s+(?:with|to)\s+(.+?)[.!?]*$',
-        # replace <old> with <new> [in/on] line N
-        r'^(?:replace|change|swap|update)\s+(?:the\s+)?(.+?)\s+(?:with|to)\s+(.+?)\s+(?:in|on|at)\s+line\s+(\w+)[.!?]*$',
-        # in line N change X to Y (alt word order)
-        r'^(?:in|on|at)\s+line\s+(\w+)\s+(?:change|set)\s+(?:the\s+)?(.+?)\s+to\s+(.+?)[.!?]*$',
+        r'^(?:in|on|at|for)\s+line\s+(\w+)\s+(?:replace|change|swap|update)\s+(?:the\s+)?(.+?)\s+(?:with|to)\s+(.+?)[.!?]*$',
+        # replace <old> with <new> [in/on/for] line N
+        r'^(?:replace|change|swap|update)\s+(?:the\s+)?(.+?)\s+(?:with|to)\s+(.+?)\s+(?:in|on|at|for)\s+line\s+(\w+)[.!?]*$',
+        # in/on/at/for line N change X to Y
+        r'^(?:in|on|at|for)\s+line\s+(\w+)\s+(?:change|set)\s+(?:the\s+)?(.+?)\s+to\s+(.+?)[.!?]*$',
     ]
     for i, pat in enumerate(replace_patterns):
         m = re.search(pat, cmd, re.IGNORECASE)
@@ -145,35 +175,22 @@ def parse_voice_edit(command: str) -> Optional[ParsedEditCommand]:
             ln = _parse_line_number(ln_raw)
             old = _clean_spoken_qualifier(old)
             new = new.strip().rstrip('.!?')
+
+            # Safety fallback: if user said "content", "the code", "text", they meant the entire line
+            if old.lower() in ("content", "the content", "code", "the code", "text", "the text", "everything", "the line", "whole line", "entire line"):
+                if ln and new:
+                    return ParsedEditCommand(
+                        token=f"REPLACE_LINE:{ln}::{new}",
+                        line_number=ln,
+                        summary=f"Replacing line {ln} with: {new}"
+                    )
+
             if ln and old and new:
                 return ParsedEditCommand(
                     token=f"REPLACE_IN_LINE:{ln}:{old}::{new}",
                     line_number=ln,
                     summary=f"Replacing '{old}' with '{new}' on line {ln}."
                 )
-
-    # 3. REPLACE ENTIRE LINE
-    # "replace line 4 with x = 0"
-    # "replace entire line 4 with x = 0"
-    # "in line 4 change the whole line to x = 0"
-    m = re.search(
-        r'^(?:replace|rewrite|overwrite|set)\s+(?:(?:the\s+)?entire\s+|(?:the\s+)?whole\s+)?line\s+(\w+)\s+(?:with|to)\s+(.+?)[.!?]*$',
-        cmd, re.IGNORECASE
-    )
-    if not m:
-        m = re.search(
-            r'^(?:in|on|at)\s+line\s+(\w+)\s+(?:change|replace|rewrite)\s+(?:the\s+)?(?:whole|entire)\s+line\s+(?:to|with)\s+(.+?)[.!?]*$',
-            cmd, re.IGNORECASE
-        )
-    if m:
-        ln = _parse_line_number(m.group(1))
-        new_text = m.group(2).strip().rstrip('.!?')
-        if ln:
-            return ParsedEditCommand(
-                token=f"REPLACE_LINE:{ln}::{new_text}",
-                line_number=ln,
-                summary=f"Replacing line {ln} with: {new_text}"
-            )
 
     # 4. INSERT AFTER LINE
     # "insert print hello after line 5"

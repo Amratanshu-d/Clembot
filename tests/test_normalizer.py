@@ -95,5 +95,108 @@ class TestSpeechNormalizer(unittest.TestCase):
         self.assertEqual(cmd3.lower(), "open desktop")
 
 
+class TestSTTCorruption(unittest.TestCase):
+    """Tests for code-command STT corruption correction."""
+
+    def setUp(self):
+        self.n = SpeechNormalizer()
+
+    # ── HOMOPHONE_MAP corrections ────────────────────────────────────────────
+
+    def test_showero_line(self):
+        """'showero line 32' → 'show line 32'"""
+        result = self.n.normalize_command("showero line 32")
+        self.assertIn("show", result.lower())
+        self.assertIn("line", result.lower())
+        self.assertIn("32", result)
+
+    def test_showo_line(self):
+        result = self.n.normalize_command("showo line 5")
+        self.assertIn("show", result.lower())
+
+    def test_showro_line(self):
+        result = self.n.normalize_command("showro line 10")
+        self.assertIn("show", result.lower())
+
+    def test_delet_line(self):
+        """'delet line 5' → 'delete line 5'"""
+        result = self.n.normalize_command("delet line 5")
+        self.assertIn("delete", result.lower())
+
+    def test_deleet_line(self):
+        result = self.n.normalize_command("deleet line 7")
+        self.assertIn("delete", result.lower())
+
+    def test_insertt_at_line(self):
+        """'insertt at line 3' → 'insert at line 3'"""
+        result = self.n.normalize_command("insertt at line 3")
+        self.assertIn("insert", result.lower())
+
+    def test_replays_word(self):
+        """'replays hello with world' → 'replace hello with world'"""
+        result = self.n.normalize_command("replays hello with world")
+        self.assertIn("replace", result.lower())
+
+    def test_un_comment_line(self):
+        """'un comment line 8' → 'uncomment line 8'"""
+        result = self.n.normalize_command("un comment line 8")
+        self.assertIn("uncomment", result.lower())
+
+    def test_gotto_line(self):
+        """'gotto line 20' → 'go to line 20'"""
+        result = self.n.normalize_command("gotto line 20")
+        self.assertIn("go to", result.lower())
+
+    def test_lion_for_line(self):
+        """'for lion 9 change the content to print(hello)' → has 'line'"""
+        result = self.n.normalize_command("for lion 9 change the content to print(hello)")
+        self.assertIn("line", result.lower())
+        self.assertNotIn("lion", result.lower())
+
+    def test_lyine_for_line(self):
+        result = self.n.normalize_command("show lyine 15")
+        self.assertIn("line", result.lower())
+
+    def test_commet(self):
+        result = self.n.normalize_command("commet line 4")
+        self.assertIn("comment", result.lower())
+
+    # ── Regex token-repair pass ──────────────────────────────────────────────
+
+    def test_regex_showero(self):
+        """Regex pass catches garbled 'showero' even without exact dict entry."""
+        result = self.n.fix_code_command_tokens("showero line 32")
+        self.assertIn("show", result.lower())
+
+    def test_regex_line_lion(self):
+        result = self.n.fix_code_command_tokens("lion 32")
+        self.assertIn("line", result.lower())
+
+    def test_regex_go_to_gotto(self):
+        result = self.n.fix_code_command_tokens("gotto line 5")
+        self.assertIn("go to", result.lower())
+
+    def test_spoken_digit_thirty_2(self):
+        """'thirty 2' → 'thirty two' via lambda replacement."""
+        result = self.n.normalize_command("show line thirty 2")
+        self.assertIn("thirty two", result.lower())
+
+    def test_hyphenated_digit_thirty_two(self):
+        """'thirty-two' → 'thirty two' via homophone map."""
+        result = self.n.normalize_command("show line thirty-two")
+        self.assertIn("thirty two", result.lower())
+
+    def test_full_pipeline_showero(self):
+        """End-to-end: 'please showero line 32' → 'show line 32'"""
+        result = self.n.normalize_command("please showero line 32")
+        self.assertEqual(result.lower(), "show line 32")
+
+    def test_full_pipeline_lion_digit(self):
+        """End-to-end: 'for lion 9 change content to x' has 'line 9'"""
+        result = self.n.normalize_command("for lion 9 change content to x")
+        self.assertIn("line", result.lower())
+        self.assertIn("9", result)
+
+
 if __name__ == "__main__":
     unittest.main()

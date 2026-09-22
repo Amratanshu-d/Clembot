@@ -16,7 +16,7 @@ class AssistantState(str, Enum):
 
 class AgentAction(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    type: str                                # e.g. "open_folder", "create_file", "vscode_edit", "web_search"
+    type: str                                # e.g. "open_folder", "create_file", "vscode_patch", "vscode_edit", "web_search"
     app: Optional[str] = None                # e.g. "Google Chrome", "VS Code", "Notepad"
     url: Optional[str] = None                # e.g. "https://github.com"
     text: Optional[str] = None               # Content or text to type / write
@@ -33,6 +33,11 @@ class AgentAction(BaseModel):
     scope: Optional[str] = None              # Search scope or folder alias
     line_number: Optional[int] = None        # Target editor line number
     wait_milliseconds: Optional[int] = None  # Wait duration
+    # Targeted Semantic Code Patch fields
+    target_code: Optional[str] = None        # Exact or fuzzy code snippet to locate and replace
+    replacement_code: Optional[str] = None   # Replacement code block
+    symbol: Optional[str] = None             # Targeted function, class, or variable name
+    patch_action: Optional[str] = "replace"  # "replace", "insert_before", "insert_after", "delete"
 
 
 class AgentPlan(BaseModel):
@@ -41,6 +46,7 @@ class AgentPlan(BaseModel):
     needs_confirmation: bool = False         # Whether any action requires confirmation
     reasoning: Optional[str] = None          # Internal reasoning or explanation
     confidence: float = 1.0                  # Confidence score (0.0 to 1.0)
+    intent: Optional[str] = None             # Intent classification (e.g. "conversation", "code_modification", "code_inspection")
 
 
 class ScreenContext(BaseModel):
@@ -55,6 +61,11 @@ class ScreenContext(BaseModel):
     clipboard_text: Optional[str] = None     # Current clipboard text (truncated)
     selected_text: Optional[str] = None      # Highlighted text (if accessible)
     recent_history: Optional[List[Dict[str, Any]]] = None # Multi-turn conversation history for LLM
+    # Conversational code context
+    focused_code_snippet: Optional[str] = None # Relevant lines around cursor/active function
+    last_modified_file: Optional[str] = None   # Most recently edited file
+    last_modified_symbol: Optional[str] = None # Most recently edited function/class
+    last_edit_summary: Optional[str] = None    # Summary of recent patch
 
 
 class ConfirmationRequest(BaseModel):

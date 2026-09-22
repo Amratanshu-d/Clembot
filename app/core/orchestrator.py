@@ -150,13 +150,22 @@ class AssistantOrchestrator:
         self.set_state(AssistantState.PROCESSING)
         self.memory.add_user_turn(raw_command)
 
-        # Normalize spoken fillers and homophones (e.g. "please open post grey sql" -> "open postgresql")
+        # Normalize spoken fillers and homophones
         normalized_cmd = speech_normalizer.normalize_command(raw_command)
 
-        # A. Resolve Contextual Memory (e.g. "there" -> last visited folder)
+        # A. Resolve contextual memory references ("that file", "that function", "undo that")
         resolved_command = self.memory.resolve_contextual_references(normalized_cmd)
         if resolved_command != raw_command:
             logger.info(f"Normalized/Resolved command: \"{resolved_command}\"")
+
+        # A1. Direct undo shortcut — resolve_contextual_references returns literal "undo"
+        if resolved_command.strip().lower() == "undo":
+            from app.editor.code_patch_engine import code_patch_engine
+            last_file = getattr(self.memory, 'last_file', None)
+            success, msg = code_patch_engine.undo_last_patch(last_file)
+            self._reply_and_record(msg)
+            self.set_state(AssistantState.LISTENING)
+            return
 
         # B. Check for non-English / Hinglish phrasing
         is_hinglish = language_detector.is_hinglish(normalized_cmd)
@@ -174,10 +183,44 @@ class AssistantOrchestrator:
             self.set_state(AssistantState.PROCESSING)
             context = self.context_manager.capture_context()
             context.recent_history = self.memory.get_recent_history(limit=6)
+
+            # Inject conversational code context from memory
+            mem_ctx = self.memory.get_memory_context_dict()
+            if mem_ctx.get("last_file"):
+                context.last_modified_file = mem_ctx.get("last_file")
+            if mem_ctx.get("last_symbol"):
+                context.last_modified_symbol = mem_ctx.get("last_symbol")
+            if mem_ctx.get("last_patch_summary"):
+                context.last_edit_summary = mem_ctx.get("last_patch_summary")
+
+            # Inject focused code snippet (lines around cursor)
+            self._inject_code_snippet(context)
+
             plan = self.ai_provider.plan(resolved_command, context)
 
         # D. Execute Plan
         self._dispatch_plan(plan)
+
+    def _inject_code_snippet(self, context: ScreenContext) -> None:
+        """Injects focused code context (lines around cursor) into ScreenContext for richer LLM prompts."""
+        try:
+            if context.vscode_file:
+                from pathlib import Path
+                p = Path(context.vscode_file)
+                if p.is_file():
+                    raw = p.read_bytes()
+                    try:
+                        text = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = raw.decode("cp1252", errors="replace")
+                    lines = text.splitlines()
+                    cursor = max(1, context.vscode_line or 1)
+                    start = max(0, cursor - 20)
+                    end = min(len(lines), cursor + 20)
+                    snippet_lines = [f"{i + 1 + start}: {ln}" for i, ln in enumerate(lines[start:end])]
+                    context.focused_code_snippet = "\n".join(snippet_lines)
+        except Exception as e:
+            logger.debug(f"Could not inject code snippet: {e}")
 
     def _dispatch_plan(self, plan: AgentPlan) -> None:
         """Validates safety and dispatches planned actions."""
@@ -211,6 +254,28 @@ class AssistantOrchestrator:
             if result.message:
                 replies.append(result.message)
 
+            # Record successful code patches in conversational memory
+            if result.success and action.type == "vscode_patch":
+                from pathlib import Path
+                patch_file = Path(action.path) if getattr(action, 'path', None) else getattr(self.memory, 'last_file', None)
+                if patch_file:
+                    self.memory.record_code_patch(
+                        file_path=patch_file,
+                        explanation=getattr(action, 'instruction', None) or result.message or "",
+                        symbol_name=getattr(action, 'symbol', None),
+                    )
+                    self.memory.last_file = patch_file
+
+            # Track last opened/edited file
+            if result.success and action.type in ("vscode_open_file", "vscode_edit", "vscode_read_line"):
+                if getattr(action, 'path', None):
+                    from pathlib import Path
+                    self.memory.last_file = Path(action.path)
+
+            # Record errors for conversational follow-up ("why did it fail?")
+            if not result.success and result.error:
+                self.memory.record_error(result.error)
+
         final_reply = " ".join(replies) if replies else default_reply
         self._reply_and_record(final_reply)
         self.set_state(AssistantState.LISTENING)
@@ -218,14 +283,15 @@ class AssistantOrchestrator:
     def _handle_confirmation_response(self, response_text: str) -> None:
         """Handles user spoken response to a pending confirmation."""
         norm = response_text.lower().strip()
-        positive = ["confirm", "yes", "do it", "sure", "proceed", "okay", "ok", "apply", "delete", "run"]
-        negative = ["cancel", "no", "stop", "never mind", "dont", "do not", "abort"]
+        positive = ["confirm", "yes", "do it", "sure", "proceed", "okay", "ok", "apply", "delete", "run",
+                    "haan", "theek", "bilkul", "kar do"]
+        negative = ["cancel", "no", "stop", "never mind", "dont", "do not", "abort", "nahi", "mat karo"]
 
         if any(w in norm for w in positive):
             req = self.pending_confirmation
             self.pending_confirmation = None
             event_bus.emit("confirmation_resolved", {"id": req.id, "approved": True})
-            self._execute_actions(req.actions, "Confirmed. Action executed.")
+            self._execute_actions(req.actions, "Confirmed. Applying changes now.")
 
         elif any(w in norm for w in negative):
             req = self.pending_confirmation
@@ -235,15 +301,35 @@ class AssistantOrchestrator:
             self.set_state(AssistantState.LISTENING)
 
         else:
-            self._reply_and_record("I need your confirmation. Please say confirm to proceed, or cancel to abort.")
+            self._reply_and_record("Please say confirm to proceed, or cancel to abort.")
+
+    @staticmethod
+    def _strip_markdown_for_voice(reply: str) -> str:
+        """Strips markdown symbols that sound unnatural via TTS."""
+        if not reply:
+            return reply
+        reply = re.sub(r'```[^`]*```', '', reply, flags=re.DOTALL)
+        reply = re.sub(r'`[^`]+`', lambda m: m.group(0).strip('`'), reply)
+        reply = re.sub(r'\*\*(.+?)\*\*', r'\1', reply)
+        reply = re.sub(r'\*(.+?)\*', r'\1', reply)
+        reply = re.sub(r'__(.+?)__', r'\1', reply)
+        reply = re.sub(r'_(.+?)_', r'\1', reply)
+        reply = re.sub(r'^#+\s*', '', reply, flags=re.MULTILINE)
+        reply = re.sub(r'^\s*[-*•]\s+', '', reply, flags=re.MULTILINE)
+        reply = re.sub(r'^\s*\d+\.\s+', '', reply, flags=re.MULTILINE)
+        reply = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', reply)
+        reply = re.sub(r'\n{3,}', '\n\n', reply)
+        return reply.strip()
 
     def _reply_and_record(self, reply: str) -> None:
-        """Speaks the reply and logs it in conversational history and event bus."""
-        logger.info(f"Clembot Reply: \"{reply}\"")
-        self.memory.add_clembot_turn(reply)
-        event_bus.emit("clembot_replied", reply)
-        voice_service.speak(reply)
+        """Speaks the reply (with markdown stripped) and logs it in conversational history."""
+        clean_reply = self._strip_markdown_for_voice(reply)
+        logger.info(f"Clembot Reply: \"{clean_reply}\"")
+        self.memory.add_clembot_turn(clean_reply)
+        event_bus.emit("clembot_replied", clean_reply)
+        voice_service.speak(clean_reply)
 
 
 # Global orchestrator singleton
 orchestrator = AssistantOrchestrator()
+

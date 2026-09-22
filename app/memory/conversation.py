@@ -1,3 +1,11 @@
+"""
+app/memory/conversation.py
+
+Multi-turn Conversational Memory for Clembot.
+Tracks entities, active workspace, files, functions/symbols, code patches,
+and resolves conversational references ("it", "that", "this file", "undo that").
+"""
+
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,21 +22,37 @@ class ConversationTurn:
     target_path: Optional[str] = None
     target_app: Optional[str] = None
     target_file: Optional[str] = None
+    target_symbol: Optional[str] = None
 
 
 class ConversationalMemory:
     """
     Maintains short-term conversational context and resolves pronouns and directional references.
-    Examples: "there" -> last visited folder, "that file" -> last opened file.
+    Examples:
+      - "there" -> last visited folder
+      - "this file" / "that file" -> last touched file
+      - "that function" -> last inspected/modified symbol
+      - "undo that" / "change it back" -> trigger undo of last code patch
+      - "the other file" -> previous file in history
     """
 
-    def __init__(self, max_history: int = 20):
+    def __init__(self, max_history: int = 25):
         self.history: List[ConversationTurn] = []
         self.max_history = max_history
+
+        # Entity tracking
+        self.last_workspace: Optional[Path] = None
         self.last_folder: Optional[Path] = None
         self.last_file: Optional[Path] = None
         self.last_app: Optional[str] = None
-        self.last_function: Optional[str] = None
+        self.last_symbol: Optional[str] = None
+        self.last_action_type: Optional[str] = None
+        self.last_error_message: Optional[str] = None
+
+        # Code editing tracking
+        self.last_code_patch: Optional[Dict[str, Any]] = None
+        self.recent_modified_files: List[Path] = []
+        self.undo_stack: List[Dict[str, Any]] = []
 
     def add_user_turn(self, text: str) -> None:
         turn = ConversationTurn(
@@ -46,7 +70,8 @@ class ConversationalMemory:
         intent: Optional[str] = None,
         target_path: Optional[str] = None,
         target_app: Optional[str] = None,
-        target_file: Optional[str] = None
+        target_file: Optional[str] = None,
+        target_symbol: Optional[str] = None
     ) -> None:
         turn = ConversationTurn(
             timestamp=datetime.now(),
@@ -55,7 +80,8 @@ class ConversationalMemory:
             intent=intent,
             target_path=target_path,
             target_app=target_app,
-            target_file=target_file
+            target_file=target_file,
+            target_symbol=target_symbol
         )
         self.history.append(turn)
         if len(self.history) > self.max_history:
@@ -78,25 +104,71 @@ class ConversationalMemory:
         if target_app:
             self.last_app = target_app
 
+        if target_symbol:
+            self.last_symbol = target_symbol
+
+    def record_code_patch(
+        self,
+        file_path: Path,
+        explanation: str,
+        diff: Optional[str] = None,
+        symbol_name: Optional[str] = None
+    ) -> None:
+        """Records a successful code modification for multi-turn reference and undo."""
+        patch_info = {
+            "file": file_path,
+            "explanation": explanation,
+            "diff": diff,
+            "symbol": symbol_name or self.last_symbol,
+            "timestamp": datetime.now()
+        }
+        self.last_code_patch = patch_info
+        self.last_file = file_path
+        if symbol_name:
+            self.last_symbol = symbol_name
+        self.undo_stack.append(patch_info)
+
+        if file_path not in self.recent_modified_files:
+            self.recent_modified_files.append(file_path)
+
+    def record_error(self, error_msg: str) -> None:
+        """Records an execution error message for conversational diagnosis ("why did it fail?")."""
+        self.last_error_message = error_msg
+
     def resolve_contextual_references(self, command: str) -> str:
         """
-        Replaces contextual references like 'there', 'that folder', 'that file'
-        with the concrete entities from memory.
+        Replaces contextual references like 'there', 'that folder', 'that file',
+        'that function', 'undo that' with the concrete entities from memory.
         """
         resolved = command
 
-        # Resolve "there" or "in there" to the last visited folder
+        # 1. Direct undo commands
+        if re.search(r'\b(?:undo\s+that|undo\s+(?:the\s+)?last\s+(?:code\s+)?change|change\s+it\s+back|revert\s+that|revert\s+(?:the\s+)?(?:last\s+)?(?:code\s+)?change|pehle\s+jaisa\s+kar\s+do|jo\s+abhi\s+change\s+kiya\s+tha\s+usko\s+undo\s+karo)\b', command, re.IGNORECASE):
+            return "undo"
+
+        # 2. Resolve "there" or "in there" to the last visited folder
         if self.last_folder:
             folder_str = str(self.last_folder)
             resolved = re.sub(r'\b(?:in\s+)?there\b', lambda m: f"in {folder_str}", resolved, flags=re.IGNORECASE)
             resolved = re.sub(r'\bthat\s+folder\b', lambda m: f"folder {folder_str}", resolved, flags=re.IGNORECASE)
 
-        # Resolve "that file" or "it" when a file was recently discussed
+        # 3. Resolve "this file", "that file", "same file"
         if self.last_file:
             file_str = str(self.last_file)
-            resolved = re.sub(r'\bthat\s+file\b', lambda m: f"file {file_str}", resolved, flags=re.IGNORECASE)
-            # Only replace " it " if it clearly refers to an action on the file (e.g. "delete it", "open it")
-            resolved = re.sub(r'\b(delete|open|rename|copy|move|run)\s+it\b', lambda m: f"{m.group(1)} {file_str}", resolved, flags=re.IGNORECASE)
+            resolved = re.sub(r'\b(?:this|that|same)\s+file\b', lambda m: f"file {file_str}", resolved, flags=re.IGNORECASE)
+            # Replace " it " with full file path when referencing an operation
+            resolved = re.sub(r'\b(delete|open|rename|copy|move|run|inspect|clean|format)\s+it\b', lambda m: f"{m.group(1)} {file_str}", resolved, flags=re.IGNORECASE)
+
+        # 4. Resolve "the other file"
+        if len(self.recent_modified_files) >= 2 and self.last_file:
+            other_file = [f for f in self.recent_modified_files if f != self.last_file][-1]
+            resolved = re.sub(r'\bthe\s+other\s+file\b', lambda m: f"file {other_file}", resolved, flags=re.IGNORECASE)
+
+        # 5. Resolve "that function", "this function", "same function"
+        if self.last_symbol:
+            sym = self.last_symbol
+            resolved = re.sub(r'\b(?:this|that|same)\s+function\b', lambda m: f"function {sym}", resolved, flags=re.IGNORECASE)
+            resolved = re.sub(r'\b(?:this|that|same)\s+symbol\b', lambda m: f"symbol {sym}", resolved, flags=re.IGNORECASE)
 
         return resolved
 
@@ -105,9 +177,26 @@ class ConversationalMemory:
         recent = self.history[-limit:] if len(self.history) > limit else list(self.history)
         return [{"role": "user" if t.speaker == "user" else "assistant", "content": t.text} for t in recent]
 
+    def get_memory_context_dict(self) -> Dict[str, Any]:
+        """Provides a structured dictionary of recent memory for prompt building."""
+        return {
+            "last_workspace": str(self.last_workspace) if self.last_workspace else None,
+            "last_file": str(self.last_file) if self.last_file else None,
+            "last_symbol": self.last_symbol,
+            "last_error": self.last_error_message,
+            "last_patch_summary": self.last_code_patch.get("explanation") if self.last_code_patch else None,
+            "recent_files": [str(f) for f in self.recent_modified_files[-3:]]
+        }
+
     def clear(self) -> None:
         self.history.clear()
+        self.last_workspace = None
         self.last_folder = None
         self.last_file = None
         self.last_app = None
-        self.last_function = None
+        self.last_symbol = None
+        self.last_action_type = None
+        self.last_error_message = None
+        self.last_code_patch = None
+        self.recent_modified_files.clear()
+        self.undo_stack.clear()

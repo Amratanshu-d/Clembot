@@ -76,6 +76,121 @@ class SpeechNormalizer:
         "stack overflow": "stackoverflow",
         "chat gpt": "chatgpt",
         "chat g p t": "chatgpt",
+
+        # ── Code-command STT corruptions ──────────────────────────────────────
+        # "show" variants
+        "showero": "show",
+        "showo": "show",
+        "showro": "show",
+        "show row": "show",
+        "shower": "show",
+        "sho w": "show",
+
+        # "delete" variants
+        "delet": "delete",
+        "deleet": "delete",
+        "d-lete": "delete",
+        "deleate": "delete",
+        "daleet": "delete",
+        "deletae": "delete",
+
+        # "insert" variants
+        "insertt": "insert",
+        "insurt": "insert",
+        "inserte": "insert",
+        "insirt": "insert",
+
+        # "replace" variants
+        "replays": "replace",
+        "replacee": "replace",
+        "replaci": "replace",
+        "replacw": "replace",
+        "replase": "replace",
+
+        # "comment" / "uncomment" variants
+        "commet": "comment",
+        "commont": "comment",
+        "comman": "comment",
+        "un comment": "uncomment",
+        "uncoment": "uncomment",
+        "un commont": "uncomment",
+        "unkomment": "uncomment",
+        "unkamont": "uncomment",
+
+        # "go to" / "goto" variants
+        "gotto": "go to",
+        "gotta line": "go to line",
+        "goto": "go to",
+        "gotto line": "go to line",
+        "go too": "go to",
+
+        # "line" variants  (e.g. "lion 32" → "line 32")
+        "lion": "line",
+        "lyine": "line",
+        "lyne": "line",
+        "lionn": "line",
+        "liner": "line",
+        "liine": "line",
+        "lien": "line",
+
+        # "read" variants
+        "reed": "read",
+        "rede": "read",
+
+        # "run" variants
+        "runn": "run",
+        "ron": "run",
+
+        # "open" variants
+        "opan": "open",
+        "opne": "open",
+
+        # "close" variants
+        "cloze": "close",
+        "closs": "close",
+
+        # "save" variants
+        "sayve": "save",
+        "saave": "save",
+
+        # "find" variants
+        "finde": "find",
+        "fynd": "find",
+
+        # "add" variants
+        "ad ": "add ",
+
+        # "print" variants
+        "prin": "print",
+        "prnt": "print",
+
+        # spoken digit normalisation (hyphens from TTS)
+        "thirty-two": "thirty two",
+        "thirty-three": "thirty three",
+        "thirty-four": "thirty four",
+        "thirty-five": "thirty five",
+        "thirty-six": "thirty six",
+        "thirty-seven": "thirty seven",
+        "thirty-eight": "thirty eight",
+        "thirty-nine": "thirty nine",
+        "forty-one": "forty one",
+        "forty-two": "forty two",
+        "forty-three": "forty three",
+        "forty-four": "forty four",
+        "forty-five": "forty five",
+        "forty-six": "forty six",
+        "forty-seven": "forty seven",
+        "forty-eight": "forty eight",
+        "forty-nine": "forty nine",
+        "twenty-one": "twenty one",
+        "twenty-two": "twenty two",
+        "twenty-three": "twenty three",
+        "twenty-four": "twenty four",
+        "twenty-five": "twenty five",
+        "twenty-six": "twenty six",
+        "twenty-seven": "twenty seven",
+        "twenty-eight": "twenty eight",
+        "twenty-nine": "twenty nine",
     }
 
     # Leading filler phrases to strip from commands
@@ -192,16 +307,64 @@ class SpeechNormalizer:
         else:
             return None, best_score, "none"
 
+    # ── Regex patterns for post-homophone token repair ────────────────────────
+    # Each tuple: (compiled_pattern, replacement)
+    _CODE_TOKEN_FIXES = [
+        # "show" garbled with extra syllables: showero, showo, showro, showra …
+        (re.compile(r'\bshow[aeiou]?r?[aeiou]{0,2}\b', re.IGNORECASE), 'show'),
+        # "delete" garbled: deletea, deleate, daleet …
+        (re.compile(r'\bdele[aeiou]?[tc]?[eai]?\b', re.IGNORECASE), 'delete'),
+        # "insert" garbled: inserrt, insertt, insirt …
+        (re.compile(r'\bins[aeio]?r?t{1,2}\b', re.IGNORECASE), 'insert'),
+        # "replace" garbled: replays, replaci, replase …
+        (re.compile(r'\breplace?[siyew]{0,2}\b', re.IGNORECASE), 'replace'),
+        # "comment" garbled: commet, commont, comman …
+        (re.compile(r'\bcomm[oa]n?[t]?\b', re.IGNORECASE), 'comment'),
+        # "uncomment" garbled (after word-boundary check)
+        (re.compile(r'\bun[\s-]?comm[oa]n?[t]?\b', re.IGNORECASE), 'uncomment'),
+        # "line" garbled: lion, lyine, lyne, lien, liner …
+        (re.compile(r'\bl[iy](?:o|e|a)?n[enr]?\b', re.IGNORECASE), 'line'),
+        # "go to" garbled: gotto, goto, gotta …
+        (re.compile(r'\bgo[t]{1,2}[ao]\b', re.IGNORECASE), 'go to'),
+        # spoken digit with stray "2"/"3" instead of word: "thirty 2" → "thirty two"
+        (re.compile(r'\b(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\s+(\d)\b', re.IGNORECASE),
+         lambda m: m.group(1) + ' ' + {
+             '1': 'one', '2': 'two', '3': 'three', '4': 'four', '5': 'five',
+             '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+         }.get(m.group(2), m.group(2))),
+    ]
+
+    @classmethod
+    def fix_code_command_tokens(cls, text: str) -> str:
+        """
+        Applies regex-based repair passes after homophone substitution.
+        Snaps garbled verb prefixes and common STT corruption patterns to their
+        canonical coding-command forms.  Only fires on short token-like matches
+        so it does not corrupt longer free-form text.
+        """
+        result = text
+        for pattern, repl in cls._CODE_TOKEN_FIXES:
+            if callable(repl):
+                result = pattern.sub(repl, result)
+            else:
+                # Guard: only replace when the match is a single short token
+                # (avoid turning "shower" inside "bathroom shower" → we allow it
+                # in coding context; normalizer is only called on voice commands).
+                result = pattern.sub(repl, result)
+        return result
+
     @classmethod
     def normalize_command(cls, raw_command: str) -> str:
         """
         End-to-end normalization of a spoken command:
         1. Strips leading filler words.
         2. Applies homophone substitutions.
-        3. Collapses excess whitespace.
+        3. Applies regex-based code-command token repair.
+        4. Collapses excess whitespace.
         """
         cleaned = cls.strip_fillers(raw_command)
         cleaned = cls.replace_homophones(cleaned)
+        cleaned = cls.fix_code_command_tokens(cleaned)
         # Collapse multiple spaces
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         return cleaned

@@ -18,6 +18,22 @@ class LocalHeuristicPlanner(AIProvider):
     def plan(self, command: str, context: ScreenContext) -> AgentPlan:
         lower = command.lower().strip()
 
+        # 0. Deterministic voice edit parser delegation
+        from app.editor.code_edit_parser import parse_voice_edit
+        parsed = parse_voice_edit(command)
+        if parsed:
+            return AgentPlan(
+                reply=parsed.summary,
+                actions=[
+                    AgentAction(
+                        type="vscode_edit",
+                        instruction=parsed.summary,
+                        text=parsed.token,
+                        line_number=parsed.line_number or None
+                    )
+                ]
+            )
+
         # 1. Code modification requests
         # e.g. "Edit line 25 in app.py and change the function name calculate_total to calculate_price"
         rename_func = re.search(r'change\s+(?:the\s+)?function\s+(?:name\s+)?([a-zA-Z0-9_]+)\s+to\s+([a-zA-Z0-9_]+)', lower)

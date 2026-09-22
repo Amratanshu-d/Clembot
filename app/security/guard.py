@@ -152,9 +152,15 @@ class SecurityGuard:
             )
 
         # 4. Code Modification (Diff confirmation)
-        if action_type in ["vscode_edit", "code_edit"]:
+        if action_type in ["vscode_edit", "vscode_patch", "code_edit"]:
             instruction = action.instruction or action.text or "code edit"
-            prompt = f"I prepared the code changes for: '{instruction}'. Review the diff and say confirm to apply."
+            patch_hint = ""
+            if action_type == "vscode_patch":
+                target = getattr(action, 'target_code', None)
+                if target:
+                    preview = target[:80].replace('\n', ' ')
+                    patch_hint = f" Changing: '{preview}...'"
+            prompt = f"I prepared code changes for: '{instruction}'.{patch_hint} Say confirm to apply, or cancel."
             return True, ConfirmationRequest(
                 prompt=prompt,
                 actions=[action],

@@ -29,10 +29,16 @@ class VoiceService:
         if not self.enabled or not text or not text.strip():
             return
 
+        import re
+        cleaned = re.sub(r'```[^`]*```', '', text, flags=re.DOTALL)
+        cleaned = re.sub(r'[*_`#]+', '', cleaned).strip()
+        if not cleaned:
+            return
+
         if interrupt:
             self.stop()
 
-        self.queue.put(text.strip())
+        self.queue.put(cleaned)
 
     def stop(self) -> None:
         """Clears the speech queue and stops active speech."""

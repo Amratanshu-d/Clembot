@@ -401,38 +401,152 @@ class ActionRouter:
                     return ActionResult(action_id=action.id, action_type=act_type, success=False,
                                         message="Could not generate the error-handling block.")
 
-                # ------ K. Free-text → AI produces full replacement ------
+                # ------ K. Free-text instruction → targeted patch via code_patch_engine ------
                 elif token:
+                    from app.editor.code_patch_engine import code_patch_engine, TargetedPatch
                     current_code = self.vscode.read_document(active_file)
                     if not current_code:
                         return ActionResult(action_id=action.id, action_type=act_type, success=False,
                                             message="Could not read the active file.")
+                    # Build a vscode_patch action from the free-text instruction via AI
                     from app.ai.factory import AIProviderFactory
                     from app.core.models import ScreenContext
-                    import re as _re, shutil as _shutil
+                    import re as _re
+                    lines = current_code.splitlines()
+                    snippet = "\n".join(f"{i+1}: {l}" for i, l in enumerate(lines[:100]))
                     mini_prompt = (
-                        f"You are a code editor assistant. Apply the instruction below to the code.\n"
-                        f"Instruction: {token}\n\n"
-                        f"File: {active_file.name}\n```\n{current_code}\n```\n\n"
-                        f"Return ONLY the complete updated file content — no markdown fences, no explanation."
+                        f"You are a code editor. Return a vscode_patch JSON action only.\n"
+                        f"Instruction: {token}\n"
+                        f"File: {active_file.name}\n"
+                        f"Content (first 100 lines):\n{snippet}\n\n"
+                        f"Return JSON: {{\"target_code\": \"exact snippet\", \"replacement_code\": \"new snippet\", "
+                        f"\"patch_action\": \"replace\", \"explanation\": \"what changed\"}}"
                     )
                     provider = AIProviderFactory.get_provider()
-                    plan = provider.plan(mini_prompt, ScreenContext())
-                    reply_text = plan.reply.strip()
-                    reply_text = _re.sub(r'^```[^\n]*\n?', '', reply_text)
-                    reply_text = _re.sub(r'\n?```$', '', reply_text).strip()
-                    if reply_text and len(reply_text) > 10:
-                        bak = active_file.with_suffix(active_file.suffix + ".bak")
-                        _shutil.copy2(active_file, bak)
-                        active_file.write_text(reply_text, encoding="utf-8")
-                        self.vscode.open_file(active_file)
-                        return ActionResult(action_id=action.id, action_type=act_type, success=True,
-                                            message=f"Done. Applied edit to {active_file.name}. Backup saved.")
+                    ctx = ScreenContext()
+                    ctx.vscode_file = str(active_file)
+                    mini_plan = provider.plan(mini_prompt, ctx)
+                    import json as _json
+                    raw = mini_plan.reply.strip()
+                    raw = _re.sub(r'^```[^\n]*\n?', '', raw)
+                    raw = _re.sub(r'\n?```$', '', raw).strip()
+                    patch_data = {}
+                    try:
+                        patch_data = _json.loads(raw)
+                    except Exception:
+                        # Fall back: if AI returns whole file, wrap in patch
+                        if len(raw) > 20 and not raw.startswith("{"):
+                            patch_data = {
+                                "target_code": lines[0] if lines else "",
+                                "replacement_code": raw,
+                                "patch_action": "replace",
+                                "explanation": f"Applied: {token}",
+                            }
+
+                    if patch_data.get("target_code") and patch_data.get("replacement_code"):
+                        tp = TargetedPatch(
+                            file_path=active_file,
+                            target_code=patch_data["target_code"],
+                            replacement_code=patch_data["replacement_code"],
+                            explanation=patch_data.get("explanation", f"Applied: {token}"),
+                            patch_action=patch_data.get("patch_action", "replace"),
+                        )
+                        success, msg, diff = code_patch_engine.apply_patch(tp)
+                        if success:
+                            self.vscode.open_file(active_file)
+                        return ActionResult(action_id=action.id, action_type=act_type, success=success, message=msg)
                     return ActionResult(action_id=action.id, action_type=act_type, success=False,
-                                        message="The AI could not produce a valid edit. Please try again.")
+                                        message="Could not determine what to change. Try being more specific.")
 
                 return ActionResult(action_id=action.id, action_type=act_type, success=False,
                                     message="No edit instruction provided.")
+
+            # ------ vscode_patch: targeted semantic patch (preferred code edit path) ------
+            elif act_type == "vscode_patch":
+                from app.editor.code_patch_engine import code_patch_engine, TargetedPatch
+                from pathlib import Path
+
+                target_file: Optional[Path] = None
+                if action.path:
+                    target_file = WindowsPathResolver.resolve(action.path)
+                else:
+                    target_file = self.vscode.get_active_file()
+                    if not target_file or not target_file.is_file():
+                        target_file = context_base if context_base and context_base.is_file() else None
+
+                if not target_file or not target_file.is_file():
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message="No active file found. Please open a file in VS Code first.")
+
+                target_code = getattr(action, 'target_code', None) or ""
+                replacement_code = getattr(action, 'replacement_code', None) or ""
+                if not target_code and not replacement_code:
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message="Patch requires target_code and replacement_code.")
+
+                tp = TargetedPatch(
+                    file_path=target_file,
+                    target_code=target_code,
+                    replacement_code=replacement_code,
+                    explanation=getattr(action, 'instruction', None) or f"Patched {target_file.name}",
+                    line_hint=action.line_number,
+                    symbol_name=getattr(action, 'symbol', None),
+                    patch_action=getattr(action, 'patch_action', 'replace') or 'replace',
+                )
+                success, msg, diff = code_patch_engine.apply_patch(tp)
+                if success:
+                    self.vscode.open_file(target_file)
+                return ActionResult(action_id=action.id, action_type=act_type, success=success, message=msg)
+
+            # ------ vscode_inspect: explain active file or selection ------
+            elif act_type == "vscode_inspect":
+                active_file = self.vscode.get_active_file()
+                if not active_file or not active_file.is_file():
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message="No active file found in VS Code.")
+                ctx_info = self.code_engine.inspect_active_context(active_file, line_hint=None)
+                if ctx_info:
+                    msg = f"In {active_file.name}: {ctx_info}"
+                else:
+                    msg = f"Opened {active_file.name}. Unable to extract context automatically."
+                return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+
+            # ------ vscode_outline: speak file structure ------
+            elif act_type == "vscode_outline":
+                active_file = self.vscode.get_active_file()
+                if not active_file or not active_file.is_file():
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message="No active file found in VS Code.")
+                outline = self.code_engine.extract_file_outline(active_file)
+                if outline:
+                    parts = [f"{s['kind']} {s['name']} at line {s['line']}" for s in outline[:8]]
+                    msg = f"{active_file.name} contains: " + ", ".join(parts)
+                else:
+                    msg = f"Could not extract outline from {active_file.name}."
+                return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+
+            # ------ vscode_find_symbols: search workspace for a symbol ------
+            elif act_type == "vscode_find_symbols":
+                query = action.query or getattr(action, 'text', None) or ""
+                if not query:
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message="Please specify what symbol or function to find.")
+                scope_dir = None
+                if action.scope:
+                    from pathlib import Path
+                    scope_dir = Path(action.scope) if Path(action.scope).is_dir() else None
+                if not scope_dir and context_base:
+                    scope_dir = context_base if context_base.is_dir() else context_base.parent
+                if not scope_dir:
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message="No workspace directory found. Open a folder in VS Code first.")
+                results = self.code_engine.find_symbols_in_workspace(query, scope_dir)
+                if results:
+                    parts = [f"{r['symbol']} in {r['file']} at line {r['line']}" for r in results[:5]]
+                    msg = "Found: " + "; ".join(parts)
+                else:
+                    msg = f"No results for '{query}' in the workspace."
+                return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
 
             elif act_type == "answer_question":
                 reply_text = action.text or action.query or ""
@@ -504,15 +618,32 @@ class ActionRouter:
                 stripped = original[: -len(ending)]
                 break
 
-        if old not in stripped:
-            # Also try case-insensitive to give a helpful message
-            return f"I could not find '{old}' on line {line_no}. Line contains: {stripped.strip()!r}"
+        # If user intended to replace the whole content of the line
+        if old.lower().strip() in ("content", "the content", "code", "the code", "text", "the text", "everything", "whole line", "entire line"):
+            self.vscode.apply_edit(path, line_no, line_no, new)
+            return f"Done. Replaced line {line_no} with: {new}"
 
-        replaced = stripped.replace(old, new, 1)
+        target_old = old
+        if target_old not in stripped:
+            # Try without quotes if user or STT added quotes
+            unquoted = target_old.strip("'\"")
+            if unquoted and unquoted in stripped:
+                target_old = unquoted
+            elif target_old.lower() in stripped.lower():
+                # Case-insensitive substring match
+                ci_idx = stripped.lower().find(target_old.lower())
+                target_old = stripped[ci_idx:ci_idx + len(target_old)]
+            elif unquoted and unquoted.lower() in stripped.lower():
+                ci_idx = stripped.lower().find(unquoted.lower())
+                target_old = stripped[ci_idx:ci_idx + len(unquoted)]
+            else:
+                return f"I could not find '{old}' on line {line_no}. Line contains: {stripped.strip()!r}"
+
+        replaced = stripped.replace(target_old, new, 1)
         lines[idx] = replaced + eol
         self._write_lines(path, lines)
-        logger.info(f"Replaced '{old}' → '{new}' on line {line_no} of {path.name}")
-        return f"Done. Replaced '{old}' with '{new}' on line {line_no}."
+        logger.info(f"Replaced '{target_old}' → '{new}' on line {line_no} of {path.name}")
+        return f"Done. Replaced '{target_old}' with '{new}' on line {line_no}."
 
     def _file_delete_lines(self, path: Path, start: int, end: int) -> bool:
         """Delete 1-indexed lines start..end inclusive. Returns True on success."""

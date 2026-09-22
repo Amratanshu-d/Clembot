@@ -204,6 +204,29 @@ async function handleCommand(cmd: any) {
                 break;
             }
 
+            case 'inspect_context': {
+                if (editor) {
+                    const line = editor.selection.active.line;
+                    const selectedText = editor.document.getText(editor.selection);
+                    const totalLines = editor.document.lineCount;
+                    const startLine = Math.max(0, line - 15);
+                    const endLine = Math.min(totalLines - 1, line + 15);
+                    const snippetRange = new vscode.Range(
+                        new vscode.Position(startLine, 0),
+                        new vscode.Position(endLine, editor.document.lineAt(endLine).range.end.character)
+                    );
+                    result.success = true;
+                    result.file_path = editor.document.uri.fsPath;
+                    result.line = line + 1;
+                    result.selected_text = selectedText;
+                    result.code_snippet = editor.document.getText(snippetRange);
+                    result.total_lines = totalLines;
+                } else {
+                    result.error = 'No active editor';
+                }
+                break;
+            }
+
             default:
                 result.error = `Unknown action: ${action}`;
         }

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -145,6 +146,110 @@ def _parse_filename_from_title(title: str) -> Optional[str]:
     return None
 
 
+def _resolve_from_vscdb() -> Optional[Path]:
+    """
+    Read active editor tab directly from VS Code's workspaceStorage/<id>/state.vscdb.
+    Works reliably without the VS Code extension, without window title inspection,
+    and without GUI automation.
+    """
+    appdata = os.environ.get("APPDATA", "")
+    if not appdata:
+        return None
+
+    ws_folder = _get_vscode_workspace_from_storage() or VSCodeAdapter._cached_workspace
+
+    for variant in ("Code", "Code - Insiders", "VSCodium"):
+        ws_root = Path(appdata) / variant / "User" / "workspaceStorage"
+        if not ws_root.is_dir():
+            continue
+
+        try:
+            dirs = sorted(ws_root.glob("*"), key=lambda d: d.stat().st_mtime if d.is_dir() else 0, reverse=True)
+        except Exception:
+            dirs = list(ws_root.glob("*"))
+
+        # If a workspace folder is known, check that matching directory first
+        ordered_dirs: List[Path] = []
+        if ws_folder:
+            for d in dirs:
+                ws_json = d / "workspace.json"
+                if ws_json.is_file():
+                    try:
+                        wdata = json.loads(ws_json.read_text(encoding="utf-8", errors="replace"))
+                        folder_uri = wdata.get("folder", "")
+                        if folder_uri and _uri_to_path(folder_uri) == ws_folder:
+                            ordered_dirs.append(d)
+                            break
+                    except Exception:
+                        pass
+        for d in dirs:
+            if d not in ordered_dirs:
+                ordered_dirs.append(d)
+
+        for d in ordered_dirs:
+            db_path = d / "state.vscdb"
+            if not db_path.is_file():
+                continue
+            try:
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+                cur = conn.cursor()
+
+                # 1. Try memento/workbench.parts.editor (active tab in focused editor group)
+                cur.execute("SELECT value FROM ItemTable WHERE key = 'memento/workbench.parts.editor'")
+                row = cur.fetchone()
+                if row:
+                    val = json.loads(row[0])
+                    grid = val.get("editorpart.state", {}).get("serializedGrid", {})
+                    root = grid.get("root", {})
+                    leaves: List[Dict[str, Any]] = []
+
+                    def collect_leaves(node):
+                        if not isinstance(node, dict):
+                            return
+                        if node.get("type") == "leaf":
+                            leaves.append(node.get("data", {}))
+                        elif node.get("type") == "branch":
+                            for child in node.get("data", []):
+                                collect_leaves(child)
+
+                    collect_leaves(root)
+                    for leaf in leaves:
+                        editors = leaf.get("editors", [])
+                        mru = leaf.get("mru", [])
+                        if mru and editors:
+                            active_idx = mru[0]
+                            if 0 <= active_idx < len(editors):
+                                ed_val = json.loads(editors[active_idx].get("value", "{}"))
+                                fspath = ed_val.get("resourceJSON", {}).get("fsPath")
+                                if fspath and Path(fspath).is_file():
+                                    conn.close()
+                                    logger.info(f"Resolved active VS Code file from state.vscdb: {fspath}")
+                                    p = Path(fspath)
+                                    VSCodeAdapter._cached_file = p
+                                    return p
+
+                # 2. Try history.entries (recently focused files list)
+                cur.execute("SELECT value FROM ItemTable WHERE key = 'history.entries'")
+                row = cur.fetchone()
+                if row:
+                    entries = json.loads(row[0])
+                    for item in entries:
+                        res = item.get("editor", {}).get("resource", "")
+                        if res:
+                            p = _uri_to_path(res)
+                            if p and p.is_file():
+                                conn.close()
+                                logger.info(f"Resolved active VS Code file from history.entries: {p}")
+                                VSCodeAdapter._cached_file = p
+                                return p
+
+                conn.close()
+            except Exception as e:
+                logger.debug(f"Error querying {db_path}: {e}")
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Main adapter class
 # ---------------------------------------------------------------------------
@@ -232,21 +337,26 @@ class VSCodeAdapter(EditorAdapter):
     def get_active_file(self) -> Optional[Path]:
         """
         Returns the currently focused file in VS Code.
-        Layer 1 → IPC; Layer 2 → storage+title; Layer 3 → cache.
+        Layer 1 → IPC; Layer 2 → state.vscdb (live SQLite tab database); Layer 3 → storage+title; Layer 4 → cache.
         """
-        # Layer 1: IPC extension (most accurate)
+        # Layer 1: IPC extension (most accurate if extension active)
         if ipc_server.state.is_active and ipc_server.state.file_path:
             p = Path(ipc_server.state.file_path)
             if p.is_file():
                 VSCodeAdapter._cached_file = p
                 return p
 
-        # Layer 2: storage.json + window title
+        # Layer 2: state.vscdb (reads exact active tab directly from VS Code's internal database)
+        vscdb_file = _resolve_from_vscdb()
+        if vscdb_file:
+            return vscdb_file
+
+        # Layer 3: storage.json + window title
         found = self._resolve_from_storage_and_title()
         if found:
             return found
 
-        # Layer 3: stale cache
+        # Layer 4: stale cache
         if VSCodeAdapter._cached_file and VSCodeAdapter._cached_file.is_file():
             logger.debug(f"Using cached VS Code file: {VSCodeAdapter._cached_file}")
             return VSCodeAdapter._cached_file
@@ -359,8 +469,24 @@ class VSCodeAdapter(EditorAdapter):
             e = min(len(lines), end_line)
             # Detect EOL from file
             eol = "\r\n" if text.count("\r\n") >= text.count("\n") - text.count("\r\n") else "\n"
-            chunk = new_text.rstrip("\r\n") + eol
-            lines[s:e] = [chunk]
+
+            # Preserve leading indentation if original line had indentation and new_text doesn't specify its own
+            indent = ""
+            if 0 <= s < len(lines):
+                orig_line = lines[s]
+                indent = orig_line[:len(orig_line) - len(orig_line.lstrip(" \t"))]
+
+            chunks = []
+            for idx_line, raw_chunk in enumerate(new_text.splitlines()):
+                if indent and not raw_chunk.startswith((" ", "\t")) and (idx_line == 0 or not raw_chunk.strip().startswith("#")):
+                    chunks.append(indent + raw_chunk.rstrip("\r\n") + eol)
+                else:
+                    chunks.append(raw_chunk.rstrip("\r\n") + eol)
+
+            if not chunks:
+                chunks = [eol]
+
+            lines[s:e] = chunks
             file_path.write_bytes("".join(lines).encode("utf-8"))
             return True
         except Exception as ex:

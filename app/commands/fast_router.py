@@ -380,11 +380,27 @@ class FastCommandRouter:
                 )]
             )
 
-        # 14. App launching & intelligent opening
+        # 14. Project / Workspace Opening
+        # e.g. "Open my Django project", "Open project voiceps"
+        open_proj = re.search(r'^(?:open|launch)\s+(?:my\s+)?(.*?)\s+(?:project|workspace|repository|repo)[.!?]*$', lower)
+        if open_proj:
+            proj_name = open_proj.group(1).strip()
+            if llm_active:
+                # Allow LLM with full context to locate the workspace and open it
+                return None
+            return AgentPlan(
+                reply=f"Looking for {proj_name} project.",
+                actions=[AgentAction(type="find_file", query=proj_name)]
+            )
+
+        # 15. App launching & intelligent opening
         # e.g. "Open Chrome", "Open Edge", "Open VS Code", "Open Notepad", "Open Calculator"
         open_app = re.search(r'^(?:open|launch|start|switch\s+to)\s+(.*?)$', lower)
         if open_app:
             target_app = open_app.group(1).strip()
+            # Skip if target looks like conversational instruction or file
+            if target_app.startswith(("this ", "the ", "that ")) and any(w in target_app for w in ["function", "class", "method", "variable", "line", "error", "bug"]):
+                return None
             # If target looks like a website
             if target_app.startswith(("http://", "https://", "www.")) or target_app in ["github", "youtube", "gmail", "docs", "sheets", "chatgpt", "gemini", "claude", "reddit", "whatsapp web"]:
                 return AgentPlan(
@@ -396,7 +412,7 @@ class FastCommandRouter:
                 actions=[AgentAction(type="open_app", app=target_app)]
             )
 
-        # 14. Close app
+        # 16. Close app
         # e.g. "Close Chrome", "Close Notepad"
         close_app = re.search(r'^(?:close|quit|exit)\s+(.*?)$', lower)
         if close_app:
