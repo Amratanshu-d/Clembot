@@ -133,6 +133,58 @@ class TestFastCommandRouter(unittest.TestCase):
             self.assertEqual(plan.actions[0].type, "vscode_edit")
             self.assertEqual(plan.actions[0].text, expected_token)
 
+    def test_open_file_routing(self):
+        """Files with extensions should route to open_file, not open_app."""
+        cases = [
+            "open myfile.txt",
+            "open report.pdf",
+            "open script.py",
+            "open notes.md",
+            "open data.csv",
+            "open main.cpp",
+        ]
+        for cmd in cases:
+            plan = self.router.plan_for_command(cmd)
+            self.assertIsNotNone(plan, f"No plan for: {cmd}")
+            self.assertEqual(
+                plan.actions[0].type, "open_file",
+                f"'{cmd}' routed to {plan.actions[0].type!r} instead of open_file"
+            )
+
+    def test_open_explicit_file_command(self):
+        """'open file <name>' pattern should always give open_file."""
+        cases = [
+            ("open file notes.txt", "notes.txt"),
+            ("open the file resume.pdf", "resume.pdf"),
+            ("open file main.py", "main.py"),
+        ]
+        for cmd, expected_path in cases:
+            plan = self.router.plan_for_command(cmd)
+            self.assertIsNotNone(plan, f"No plan for: {cmd}")
+            self.assertEqual(plan.actions[0].type, "open_file",
+                             f"'{cmd}' routed to {plan.actions[0].type!r}")
+            self.assertEqual(plan.actions[0].path, expected_path,
+                             f"Path mismatch for '{cmd}'")
+
+    def test_save_file_routing(self):
+        """All 'save ...' variants should produce a save action, not web search."""
+        cases = [
+            "save",
+            "save this file",
+            "save the file",
+            "save file",
+            "save the file main.py",
+            "save this code",
+            "save my work",
+        ]
+        for cmd in cases:
+            plan = self.router.plan_for_command(cmd)
+            self.assertIsNotNone(plan, f"No plan for: {cmd}")
+            self.assertEqual(
+                plan.actions[0].type, "save",
+                f"'{cmd}' routed to {plan.actions[0].type!r} instead of save"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

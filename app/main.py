@@ -14,7 +14,7 @@ from app.core.models import AssistantState
 from app.core.orchestrator import orchestrator
 from app.ipc.server import ipc_server
 from app.logging.logger import logger
-from app.speech.engine import SpeechEngine
+from app.speech.engine_factory import create_speech_engine
 from app.tts.voice_service import voice_service
 from app.ui.main_window import ClembotMainWindow
 from app.ui.tray import ClembotSystemTray
@@ -62,8 +62,8 @@ def main():
     # 1. Start Local IPC Server for VS Code Bridge
     ipc_server.start()
 
-    # 2. Initialize Speech Recognition Engine
-    speech_engine = SpeechEngine()
+    # 2. Initialize Speech Recognition Engine (Google STT or Whisper, per settings)
+    speech_engine = create_speech_engine()
     if not args.cli and not args.push_to_talk and settings.continuous_listening:
         speech_engine.start(
             on_error=lambda err: logger.warning(f"Speech error: {err}")

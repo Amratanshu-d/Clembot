@@ -49,6 +49,15 @@ class ClembotSettings(BaseModel):
     speech_pause_threshold: float = 1.1
     speech_timeout: float = 5.0
     speech_phrase_time_limit: float = 12.0
+
+    # STT Provider — "google" (default, cloud) or "whisper" (offline, faster-whisper)
+    stt_provider: str = Field(default_factory=lambda: os.getenv("CLEMBOT_STT_PROVIDER", "google"))
+    # Whisper model size: "tiny.en" (fastest/smallest), "base.en", "small.en", "medium.en"
+    whisper_model_size: str = Field(default_factory=lambda: os.getenv("WHISPER_MODEL_SIZE", "tiny.en"))
+    # Device for Whisper inference: "cpu" or "cuda" (requires NVIDIA GPU + CUDA)
+    whisper_device: str = Field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "cpu"))
+    # Compute type: "int8" (smallest/fastest on CPU), "float16" (GPU), "float32"
+    whisper_compute_type: str = Field(default_factory=lambda: os.getenv("WHISPER_COMPUTE_TYPE", "int8"))
     
     # Text-to-Speech (TTS)
     tts_enabled: bool = True

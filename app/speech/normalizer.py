@@ -165,6 +165,35 @@ class SpeechNormalizer:
         "prin": "print",
         "prnt": "print",
 
+        # spoken "dot" → file extension (e.g. "main dot py" → "main.py")
+        " dot py": ".py",
+        " dot txt": ".txt",
+        " dot js": ".js",
+        " dot ts": ".ts",
+        " dot html": ".html",
+        " dot css": ".css",
+        " dot json": ".json",
+        " dot csv": ".csv",
+        " dot md": ".md",
+        " dot yaml": ".yaml",
+        " dot yml": ".yml",
+        " dot xml": ".xml",
+        " dot pdf": ".pdf",
+        " dot docx": ".docx",
+        " dot doc": ".doc",
+        " dot xlsx": ".xlsx",
+        " dot pptx": ".pptx",
+        " dot ppt": ".ppt",
+        " dot sh": ".sh",
+        " dot bat": ".bat",
+        " dot exe": ".exe",
+        " dot png": ".png",
+        " dot jpg": ".jpg",
+        " dot jpeg": ".jpeg",
+        " dot mp3": ".mp3",
+        " dot mp4": ".mp4",
+        " dot zip": ".zip",
+
         # spoken digit normalisation (hyphens from TTS)
         "thirty-two": "thirty two",
         "thirty-three": "thirty three",
@@ -335,6 +364,11 @@ class SpeechNormalizer:
          }.get(m.group(2), m.group(2))),
         # "inline" joined before line number: "inline 43" → "in line 43", "inline43" → "in line 43"
         (re.compile(r'\binline\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b', re.IGNORECASE), r'in line \1'),
+        # Generic spoken "dot" between word tokens → file extension separator
+        # e.g. "amrit dot py" → "amrit.py", "notes dot cpp" → "notes.cpp"
+        # Only fires when the right-hand word is a short extension (1–6 chars)
+        (re.compile(r'\b(\w+)\s+dot\s+([a-zA-Z]{1,6})\b', re.IGNORECASE),
+         lambda m: f'{m.group(1)}.{m.group(2)}'),
     ]
 
     @classmethod

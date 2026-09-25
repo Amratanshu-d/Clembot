@@ -284,8 +284,10 @@ class FastCommandRouter:
                 actions=[AgentAction(type="open_file", path=f_name)]
             )
 
-        # Files with extensions: e.g. "open notes.txt", "open report.pdf"
-        file_ext_match = re.search(r'^open\s+(.*?(\.(?:txt|py|pdf|docx?|xlsx?|csv|json|md|html|css|js|ts|png|jpe?g|gif|mp3|mp4|zip|rar|xml|yaml|yml)))[.!?]*$', cmd, re.IGNORECASE)
+        # Files with extensions: e.g. "open notes.txt", "open report.pdf", "open script.py"
+        # Generic: match ANY extension (1-6 alphanumeric chars) — this is safe because by this
+        # point known folder names and app names have already been handled above.
+        file_ext_match = re.search(r'^open\s+([\w\-. ]+\.[a-zA-Z0-9]{1,6})[.!?]*$', cmd, re.IGNORECASE)
         if file_ext_match:
             f_target = file_ext_match.group(1).strip()
             return AgentPlan(
@@ -375,9 +377,14 @@ class FastCommandRouter:
                 actions=[AgentAction(type="vscode_read_line", line_number=ln)]
             )
 
-        # Save this file
-        save_file = re.search(r'^save\s+(?:this\s+|the\s+)?(?:file|code|document)[.!?]*$', cmd, re.IGNORECASE)
-        if save_file:
+        # Save this file — matches:
+        #   "save" / "save this file" / "save the file" / "save file"
+        #   "save the file main.py" / "save this code" / "save my work"
+        save_file = re.search(
+            r'^save(?:\s+(?:this|the|my))?(?:\s+(?:file|code|document|work))?(?:\s+\S+)?[.!?]*$',
+            cmd, re.IGNORECASE
+        )
+        if save_file and lower.startswith("save"):
             return AgentPlan(reply="Saving file.", actions=[AgentAction(type="save")])
 
         # Delegate to CodeEditParser for all structured edits

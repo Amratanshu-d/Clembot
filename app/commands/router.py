@@ -46,15 +46,33 @@ class ActionRouter:
             elif act_type == "open_file":
                 target_str = (action.path or "").strip()
                 lower_target = target_str.lower()
+
+                # Named shell shortcuts — always treat as apps, never as files
                 if lower_target in ["explorer", "file explorer", "taskmgr", "task manager", "settings", "control"]:
                     msg = self.apps.open_or_activate(target_str)
                     return ActionResult(action_id=action.id, action_type="open_app", success=True, message=msg)
 
+                # If the path has a file extension, go straight to filesystem — never fuzzy-match an app.
+                import re as _re
+                has_extension = bool(_re.search(r'\.[a-zA-Z0-9]{1,6}$', target_str))
+                if has_extension:
+                    try:
+                        msg = self.fs.open_file(action.path)
+                        return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                    except FileNotFoundError:
+                        found = self.search.find_first(target_str)
+                        if found and found.is_file():
+                            msg = self.fs.open_file(found)
+                            return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                                message=f"Found and opened '{found.name}'.")
+                        return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                            message=f"I couldn't find '{target_str}' on your system.")
+
+                # No extension — could be an app name or folder; try the original cascade
                 try:
                     msg = self.fs.open_file(action.path)
                     return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
                 except FileNotFoundError:
-                    # Check if target is an installed application before erroring
                     try:
                         msg = self.apps.open_or_activate(target_str)
                         return ActionResult(action_id=action.id, action_type="open_app", success=True, message=msg)

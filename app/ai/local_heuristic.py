@@ -123,6 +123,26 @@ class LocalHeuristicPlanner(AIProvider):
                 actions=[AgentAction(type="find_file", query=f"*.{ext}", scope=loc)]
             )
 
+        # Save file — catches "save the file main.py", "save main.py", "save this file"
+        save_m = re.search(r'^save\b', lower)
+        if save_m:
+            return AgentPlan(
+                reply="Saving the active file.",
+                actions=[AgentAction(type="save")]
+            )
+
+        # Open a specific file by name — catches "open file main.py", "open notes.txt"
+        open_file_m = re.search(
+            r'^(?:open|launch|start)\s+(?:(?:the|my)\s+)?(?:file\s+)?([^\s].+\.[a-zA-Z0-9]{1,6})\s*$',
+            lower
+        )
+        if open_file_m:
+            fname = open_file_m.group(1).strip()
+            return AgentPlan(
+                reply=f"Opening {fname}.",
+                actions=[AgentAction(type="open_file", path=fname)]
+            )
+
         # Guard: If command has coding or editor intent (e.g. line numbers, edit verbs),
         # DO NOT fall back to Google Search.
         code_markers = [
