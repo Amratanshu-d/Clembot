@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from typing import Optional
 from app.ai.base import AIProvider
 from app.core.models import AgentAction, AgentPlan, ScreenContext
@@ -135,19 +136,51 @@ class LocalHeuristicPlanner(AIProvider):
         open_in_vscode_m = re.search(r'^(?:open|launch|start)\s+(.*?)\s+(?:in|inside|on)\s+vs\s*code[.!?]*$', lower) or \
                            re.search(r'^(?:open|launch|start)\s+(?:in|inside|on)\s+vs\s*code\s+(.*?)[.!?]*$', lower)
         if open_in_vscode_m:
-            target = open_in_vscode_m.group(1).strip()
+            target = open_in_vscode_m.group(1).strip().strip("'\" ")
+            clean_tgt = re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', target, flags=re.IGNORECASE).strip()
+            clean_tgt = re.sub(r'\s+(?:folder|directory|project|workspace|file)$', '', clean_tgt, flags=re.IGNORECASE).strip() or target
+            clean_tgt = clean_tgt.strip("'\" ")
+            display_name = clean_tgt
+            target_path = clean_tgt
+            try:
+                from app.filesystem.paths import WindowsPathResolver
+                resolved = WindowsPathResolver.resolve_spoken_path(clean_tgt)
+                if resolved and resolved.exists():
+                    display_name = resolved.name
+                elif "\\" in clean_tgt or "/" in clean_tgt:
+                    display_name = Path(clean_tgt).name or clean_tgt
+                elif clean_tgt.split():
+                    display_name = clean_tgt.split()[-1]
+            except Exception:
+                display_name = Path(clean_tgt).name or clean_tgt
             return AgentPlan(
-                reply=f"Opening {target} in VS Code.",
-                actions=[AgentAction(type="vscode_open_file", path=target)]
+                reply=f"Opening {display_name} in VS Code.",
+                actions=[AgentAction(type="vscode_open_file", path=target_path)]
             )
 
         # Open a folder or project: "open folder practical", "open project practical", "open directory practical"
-        open_folder_m = re.search(r'^(?:open|show)\s+(?:the\s+)?(?:folder|directory|project|workspace)\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', lower)
+        open_folder_m = re.search(r'^(?:open|show)\s+(?:the\s+)?(?:folder|directory|project|workspace)\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', lower) or \
+                        re.search(r'^(?:open|show)\s+(?:the\s+)?(.*?)\s+(?:folder|directory|project|workspace)[.!?]*$', lower)
         if open_folder_m:
-            target_f = open_folder_m.group(1).strip()
+            target_f = open_folder_m.group(1).strip().strip("'\" ")
+            clean_f = re.sub(r'^(?:(?:the|my)\s+)?(?:folder|directory|project|workspace)\s+', '', target_f, flags=re.IGNORECASE).strip() or target_f
+            clean_f = clean_f.strip("'\" ")
+            display_name = clean_f
+            target_path = clean_f
+            try:
+                from app.filesystem.paths import WindowsPathResolver
+                resolved = WindowsPathResolver.resolve_spoken_path(clean_f)
+                if resolved and resolved.exists():
+                    display_name = resolved.name
+                elif "\\" in clean_f or "/" in clean_f:
+                    display_name = Path(clean_f).name or clean_f
+                elif clean_f.split():
+                    display_name = clean_f.split()[-1]
+            except Exception:
+                display_name = Path(clean_f).name or clean_f
             return AgentPlan(
-                reply=f"Opening folder {target_f}.",
-                actions=[AgentAction(type="open_folder", path=target_f)]
+                reply=f"Opening folder {display_name}.",
+                actions=[AgentAction(type="open_folder", path=target_path)]
             )
 
         # Open a specific file by name — catches "open file main.py", "open notes.txt"

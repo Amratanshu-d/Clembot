@@ -213,6 +213,168 @@ class TestVSCodeWorkspaceOpen(unittest.TestCase):
                 mock_app.assert_called_once_with("notepad")
                 mock_vscode.assert_not_called()
 
+    def test_open_absolute_folder_in_vscode(self):
+        fr = FastCommandRouter()
+        cmd = f"open {self.subfolder} folder in vscode"
+        plan = fr.plan_for_command(cmd)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_open_file")
+        self.assertEqual(Path(plan.actions[0].path).resolve(), self.subfolder.resolve())
+
+        router = ActionRouter()
+        with patch.object(router.vscode, "open_file", return_value=True) as mock_open:
+            res = router.execute(plan.actions[0])
+            self.assertTrue(res.success)
+            self.assertIn("Opened folder 'subfolder' in VS Code", res.message)
+            mock_open.assert_called_once()
+            self.assertEqual(mock_open.call_args[0][0].resolve(), self.subfolder.resolve())
+
+    def test_open_absolute_file_in_vscode(self):
+        fr = FastCommandRouter()
+        cmd = f"open {self.main_file} file in vscode"
+        plan = fr.plan_for_command(cmd)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_open_file")
+        self.assertEqual(Path(plan.actions[0].path).resolve(), self.main_file.resolve())
+
+        router = ActionRouter()
+        with patch.object(router.vscode, "open_file", return_value=True) as mock_open:
+            res = router.execute(plan.actions[0])
+            self.assertTrue(res.success)
+            self.assertIn("Opened file 'main.py' in VS Code", res.message)
+            mock_open.assert_called_once()
+            self.assertEqual(mock_open.call_args[0][0].resolve(), self.main_file.resolve())
+
+    def test_spoken_path_folder_in_vscode(self):
+        drive = self.subfolder.drive.replace(":", "")
+        rest = " ".join(self.subfolder.parts[1:])
+        spoken = f"{drive} {rest}"
+
+        fr = FastCommandRouter()
+        cmd = f"open {spoken} folder in vscode"
+        plan = fr.plan_for_command(cmd)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_open_file")
+        self.assertEqual(plan.reply, "Opening subfolder in VS Code.")
+        self.assertEqual(plan.actions[0].path, spoken)
+
+        router = ActionRouter()
+        with patch.object(router.vscode, "open_file", return_value=True) as mock_open:
+            res = router.execute(plan.actions[0])
+            self.assertTrue(res.success)
+            self.assertIn("Opened folder 'subfolder' in VS Code", res.message)
+            mock_open.assert_called_once()
+            self.assertEqual(mock_open.call_args[0][0].resolve(), self.subfolder.resolve())
+
+    def test_spoken_path_file_in_vscode(self):
+        drive = self.main_file.drive.replace(":", "")
+        rest = " ".join(self.main_file.parts[1:])
+        spoken = f"{drive} {rest}"
+
+        fr = FastCommandRouter()
+        cmd = f"open {spoken} in vscode"
+        plan = fr.plan_for_command(cmd)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_open_file")
+        self.assertEqual(plan.reply, "Opening main.py in VS Code.")
+        self.assertEqual(plan.actions[0].path, spoken)
+
+        router = ActionRouter()
+        with patch.object(router.vscode, "open_file", return_value=True) as mock_open:
+            res = router.execute(plan.actions[0])
+            self.assertTrue(res.success)
+            self.assertIn("Opened file 'main.py' in VS Code", res.message)
+            mock_open.assert_called_once()
+            self.assertEqual(mock_open.call_args[0][0].resolve(), self.main_file.resolve())
+
+    def test_user_spoken_path_practice_python(self):
+        target = Path("C:/Users/amrat/Desktop/practice/python")
+        if target.exists():
+            fr = FastCommandRouter()
+            cmd = "open c users amrat desktop practice python folder in vscode"
+            plan = fr.plan_for_command(cmd)
+            self.assertIsNotNone(plan)
+            self.assertEqual(plan.actions[0].type, "vscode_open_file")
+            self.assertEqual(plan.reply, "Opening python in VS Code.")
+            self.assertEqual(plan.actions[0].path, "c users amrat desktop practice python")
+
+            router = ActionRouter()
+            with patch.object(router.vscode, "open_file", return_value=True) as mock_open:
+                res = router.execute(plan.actions[0])
+                self.assertTrue(res.success)
+                self.assertIn("Opened folder 'python' in VS Code", res.message)
+                mock_open.assert_called_once()
+                self.assertEqual(mock_open.call_args[0][0].resolve(), target.resolve())
+
+    def test_speech_normalizer_amrat_mishearings(self):
+        norm = SpeechNormalizer()
+        self.assertEqual(
+            norm.normalize_command("open c users android desktop practice python folder in vscode"),
+            "open c users amrat desktop practice python folder in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open c users camera desktop practice python folder in vscode"),
+            "open c users amrat desktop practice python folder in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open c users amrit desktop practice python folder in vscode"),
+            "open c users amrat desktop practice python folder in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open c users am rat desktop practice python folder in vscode"),
+            "open c users amrat desktop practice python folder in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open android.py in vscode"),
+            "open amrat.py in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open camera.py in vscode"),
+            "open amrat.py in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open amrit.py in vscode"),
+            "open amrat.py in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open android in vscode"),
+            "open amrat in vscode"
+        )
+        self.assertEqual(
+            norm.normalize_command("open camera in vscode"),
+            "open amrat in vscode"
+        )
+        # Ensure standard "open camera" still opens the camera app!
+        self.assertEqual(norm.normalize_command("open camera"), "open camera")
+
+    def test_vscode_find_in_workspace_amrat_aliases(self):
+        amrat_file = self.subfolder / "amrat.py"
+        amrat_file.write_text("print('amrat')", encoding="utf-8")
+        try:
+            self.assertEqual(self.adapter.find_in_workspace("android.py"), amrat_file)
+            self.assertEqual(self.adapter.find_in_workspace("camera.py"), amrat_file)
+            self.assertEqual(self.adapter.find_in_workspace("amrit.py"), amrat_file)
+            self.assertEqual(self.adapter.find_in_workspace("android"), amrat_file)
+            self.assertEqual(self.adapter.find_in_workspace("camera"), amrat_file)
+        finally:
+            if amrat_file.exists():
+                amrat_file.unlink()
+
+    def test_spoken_path_with_misheard_username(self):
+        target = Path("C:/Users/amrat/Desktop/practice/python")
+        if target.exists():
+            for spoken in [
+                "c users android desktop practice python",
+                "c users camera desktop practice python",
+                "c users amrit desktop practice python",
+                "c users am rat desktop practice python",
+                "users android desktop practice python",
+                "users camera desktop practice python",
+            ]:
+                resolved = WindowsPathResolver.resolve_spoken_path(spoken)
+                self.assertIsNotNone(resolved, f"Failed for {spoken}")
+                self.assertEqual(resolved.resolve(), target.resolve(), f"Mismatch for {spoken}")
+
 
 if __name__ == "__main__":
     unittest.main()

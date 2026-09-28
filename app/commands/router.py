@@ -43,11 +43,27 @@ class ActionRouter:
                 raw_folder = (action.path or "Downloads").strip()
                 import re as _re
                 clean_folder = _re.sub(r'^(?:(?:the|my)\s+)?(?:folder|directory|project|workspace)\s+', '', raw_folder, flags=_re.IGNORECASE).strip() or raw_folder
+                clean_folder = _re.sub(r'\s+(?:folder|directory|project|workspace)$', '', clean_folder, flags=_re.IGNORECASE).strip() or clean_folder
+                clean_folder = clean_folder.strip("'\" ")
 
                 # 1. System shell target (e.g. ::{...})
                 if clean_folder.startswith("::{") or clean_folder.startswith("shell:"):
                     msg = self.fs.open_folder(clean_folder)
                     return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+
+                # 1b. Direct existing absolute folder
+                try:
+                    direct_dir = Path(clean_folder)
+                    if direct_dir.is_absolute() and direct_dir.is_dir():
+                        if self.vscode.get_active_file() or self.vscode.get_workspace() or self.apps.is_running("vscode"):
+                            self.vscode.open_file(direct_dir)
+                            return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                                message=f"Opened folder '{direct_dir.name}' in VS Code.")
+                        else:
+                            msg = self.fs.open_folder(direct_dir)
+                            return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                except Exception:
+                    pass
 
                 # 2. Check if it exists in the active VS Code workspace
                 ws_folder = self.vscode.find_in_workspace(clean_folder, search_files=False, search_folders=True)
@@ -380,9 +396,27 @@ class ActionRouter:
                 raw_target = (action.path or "").strip()
                 import re as _re
                 clean_target = _re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', raw_target, flags=_re.IGNORECASE).strip() or raw_target
+                clean_target = _re.sub(r'\s+(?:folder|directory|project|workspace|file)$', '', clean_target, flags=_re.IGNORECASE).strip() or clean_target
+                clean_target = clean_target.strip("'\" ")
+
+                # 0. Check direct path / absolute path first
+                target_p = None
+                try:
+                    direct = Path(clean_target)
+                    if direct.is_absolute() and direct.exists():
+                        target_p = direct
+                except Exception:
+                    pass
+
+                # 0b. Spoken path check
+                if not target_p:
+                    spoken = WindowsPathResolver.resolve_spoken_path(clean_target, context_base=context_base)
+                    if spoken and spoken.exists():
+                        target_p = spoken
 
                 # 1. Check workspace first
-                target_p = self.vscode.find_in_workspace(clean_target)
+                if not target_p:
+                    target_p = self.vscode.find_in_workspace(clean_target)
 
                 # 2. Path resolver fallback
                 if not target_p or not target_p.exists():

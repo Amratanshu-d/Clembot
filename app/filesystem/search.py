@@ -60,7 +60,8 @@ class FileSearchService:
         # Skip noisy system/cache directories
         ignored_names = {
             "node_modules", ".git", ".vscode", "__pycache__", "appdata",
-            "local", "roaming", "$recycle.bin", "system volume information"
+            "local", "roaming", "$recycle.bin", "system volume information",
+            "venv", ".venv", "myenv"
         }
 
         for root in roots:
@@ -71,10 +72,18 @@ class FileSearchService:
                 # Filter out noisy directories in place
                 dirnames[:] = [d for d in dirnames if d.lower() not in ignored_names and not d.startswith(".")]
 
-                visited += len(filenames)
+                visited += len(filenames) + len(dirnames)
                 if visited > max_visited:
                     logger.debug(f"Search reached visit limit ({max_visited})")
                     break
+
+                for dirname in dirnames:
+                    d_lower = dirname.lower()
+                    if q == d_lower or q in d_lower:
+                        full_path = Path(dirpath) / dirname
+                        matches.append(full_path)
+                        if len(matches) >= max_results:
+                            return matches
 
                 for filename in filenames:
                     fn_lower = filename.lower()
@@ -90,21 +99,22 @@ class FileSearchService:
         return matches
 
     def find_first(self, query: str, scope: Optional[str] = None) -> Optional[Path]:
-        """Returns the first matching file, prioritizing exact matches or latest modified."""
+        """Returns the first matching file or folder, prioritizing exact matches or latest modified."""
         results = self.find_files(query, scope=scope, max_results=10)
         if not results:
             return None
 
-        # Sort matches: prioritize exact name match, then newest modification time
+        # Sort matches: prioritize exact name match, then folder, then newest modification time
         q = query.strip().lower()
 
         def _sort_key(p: Path):
             is_exact = 1 if p.name.lower() == q or p.stem.lower() == q else 0
+            is_folder = 1 if p.is_dir() else 0
             try:
                 mtime = p.stat().st_mtime
             except Exception:
                 mtime = 0
-            return (is_exact, mtime)
+            return (is_exact, is_folder, mtime)
 
         results.sort(key=_sort_key, reverse=True)
         return results[0]

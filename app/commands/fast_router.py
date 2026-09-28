@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from typing import Optional, Tuple
 from app.core.models import AgentAction, AgentPlan
 
@@ -257,10 +258,26 @@ class FastCommandRouter:
         open_in_vscode = re.search(r'^(?:open|launch)\s+(.*?)\s+(?:in|inside|on)\s+vs\s*code[.!?]*$', cmd, re.IGNORECASE) or \
                          re.search(r'^(?:open|launch)\s+(?:in|inside|on)\s+vs\s*code\s+(.*?)[.!?]*$', cmd, re.IGNORECASE)
         if open_in_vscode:
-            target = open_in_vscode.group(1).strip()
+            raw_target = open_in_vscode.group(1).strip().strip("'\" ")
+            clean_tgt = re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', raw_target, flags=re.IGNORECASE).strip()
+            clean_tgt = re.sub(r'\s+(?:folder|directory|project|workspace|file)$', '', clean_tgt, flags=re.IGNORECASE).strip() or raw_target
+            clean_tgt = clean_tgt.strip("'\" ")
+            display_name = clean_tgt
+            target_path = clean_tgt
+            try:
+                from app.filesystem.paths import WindowsPathResolver
+                resolved = WindowsPathResolver.resolve_spoken_path(clean_tgt)
+                if resolved and resolved.exists():
+                    display_name = resolved.name
+                elif "\\" in clean_tgt or "/" in clean_tgt:
+                    display_name = Path(clean_tgt).name or clean_tgt
+                elif clean_tgt.split():
+                    display_name = clean_tgt.split()[-1]
+            except Exception:
+                display_name = Path(clean_tgt).name or clean_tgt
             return AgentPlan(
-                reply=f"Opening {target} in VS Code.",
-                actions=[AgentAction(type="vscode_open_file", path=target)]
+                reply=f"Opening {display_name} in VS Code.",
+                actions=[AgentAction(type="vscode_open_file", path=target_path)]
             )
 
         # Tab / File switching: "open next file", "next file", "switch file", "previous file"
@@ -284,10 +301,25 @@ class FastCommandRouter:
         explicit_folder = re.search(r'^(?:open|show)\s+(?:the\s+)?(?:folder|directory)\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', cmd, re.IGNORECASE) or \
                           re.search(r'^(?:open|show)\s+(?:the\s+)?(.*?)\s+(?:folder|directory)[.!?]*$', cmd, re.IGNORECASE)
         if explicit_folder:
-            f_name = explicit_folder.group(1).strip()
+            f_name = explicit_folder.group(1).strip().strip("'\" ")
+            clean_f = re.sub(r'^(?:(?:the|my)\s+)?(?:folder|directory|project|workspace)\s+', '', f_name, flags=re.IGNORECASE).strip() or f_name
+            clean_f = clean_f.strip("'\" ")
+            display_name = clean_f
+            target_path = clean_f
+            try:
+                from app.filesystem.paths import WindowsPathResolver
+                resolved = WindowsPathResolver.resolve_spoken_path(clean_f)
+                if resolved and resolved.exists():
+                    display_name = resolved.name
+                elif "\\" in clean_f or "/" in clean_f:
+                    display_name = Path(clean_f).name or clean_f
+                elif clean_f.split():
+                    display_name = clean_f.split()[-1]
+            except Exception:
+                display_name = Path(clean_f).name or clean_f
             return AgentPlan(
-                reply=f"Opening folder {f_name}.",
-                actions=[AgentAction(type="open_folder", path=f_name)]
+                reply=f"Opening folder {display_name}.",
+                actions=[AgentAction(type="open_folder", path=target_path)]
             )
 
         # Explicit file: e.g. "open file notes.txt", "open the file resume.pdf", "open my file"
@@ -460,6 +492,25 @@ class FastCommandRouter:
                 reply=f"Opening {proj_name}.",
                 actions=[AgentAction(type="open_folder", path=proj_name)]
             )
+
+        # Direct file or folder path with drive letter (e.g. "open C:\Users\amrat\Desktop\practice\python", "open D:/projects/main.py")
+        abs_path_match = re.search(r'^(?:open|launch|show)\s+(?:(?:the|my)\s+)?(?:file|folder|directory)?\s*([a-zA-Z]:[\\/][^\s].*?)[.!?]*$', cmd, re.IGNORECASE)
+        if abs_path_match:
+            raw_p = abs_path_match.group(1).strip().strip("'\" ")
+            clean_p = re.sub(r'\s+(?:folder|directory|project|workspace|file)$', '', raw_p, flags=re.IGNORECASE).strip() or raw_p
+            clean_p = clean_p.strip("'\" ")
+            p_obj = Path(clean_p)
+            disp_name = p_obj.name or clean_p
+            if p_obj.exists():
+                if p_obj.is_dir():
+                    return AgentPlan(reply=f"Opening folder {disp_name}.", actions=[AgentAction(type="open_folder", path=clean_p)])
+                else:
+                    return AgentPlan(reply=f"Opening {disp_name}.", actions=[AgentAction(type="open_file", path=clean_p)])
+            else:
+                has_ext = bool(re.search(r'\.[a-zA-Z0-9]{1,6}$', clean_p))
+                act = "open_file" if has_ext else "open_folder"
+                rep_type = "file" if has_ext else "folder"
+                return AgentPlan(reply=f"Opening {rep_type} {disp_name}.", actions=[AgentAction(type=act, path=clean_p)])
 
         # 15. App launching & intelligent opening
         # e.g. "Open Chrome", "Open Edge", "Open VS Code", "Open Notepad", "Open Calculator"

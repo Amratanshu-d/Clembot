@@ -534,6 +534,16 @@ class VSCodeAdapter(EditorAdapter):
         if c_nofile and c_nofile not in cleaned_variants:
             cleaned_variants.append(c_nofile)
 
+        # Check phonetic mishearings of username / workspace items (e.g. android, camera, amrit -> amrat)
+        for var in list(cleaned_variants):
+            var_lower = var.lower()
+            var_stem = Path(var_lower).stem
+            ext = Path(var_lower).suffix
+            if var_stem in ("android", "camera", "amrit", "amruth", "amrath", "amret", "emrat", "omrat", "imrat", "anrat", "anrod", "camrat", "kamrat", "am rat"):
+                alias = f"amrat{ext}" if ext else "amrat"
+                if alias not in cleaned_variants:
+                    cleaned_variants.append(alias)
+
         roots = self.get_workspace_roots()
 
         for clean in cleaned_variants:

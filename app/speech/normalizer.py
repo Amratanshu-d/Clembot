@@ -239,6 +239,31 @@ class SpeechNormalizer:
         "twenty-seven": "twenty seven",
         "twenty-eight": "twenty eight",
         "twenty-nine": "twenty nine",
+
+        # ── User profile & workspace name homophones ("amrat") ──────────────
+        "amruth": "amrat",
+        "amrath": "amrat",
+        "amret": "amrat",
+        "emrat": "amrat",
+        "omrat": "amrat",
+        "imrat": "amrat",
+        "anrat": "amrat",
+        "anrod": "amrat",
+        "camrat": "amrat",
+        "kamrat": "amrat",
+        "am rat": "amrat",
+        "aim rat": "amrat",
+        "i'm rat": "amrat",
+        "im rat": "amrat",
+        "an rod": "amrat",
+        "users android": "users amrat",
+        "users camera": "users amrat",
+        "users amrit": "users amrat",
+        "users am rat": "users amrat",
+        "c users android": "c users amrat",
+        "c users camera": "c users amrat",
+        "c users amrit": "c users amrat",
+        "c users am rat": "c users amrat",
     }
 
     # Leading filler phrases to strip from commands
@@ -393,6 +418,17 @@ class SpeechNormalizer:
         # Only fires when the right-hand word is a short extension (1–6 chars)
         (re.compile(r'\b(\w+)\s+dot\s+([a-zA-Z0-9]{1,6})\b', re.IGNORECASE),
          lambda m: f'{m.group(1)}.{m.group(2)}'),
+        # Repair misheard "amrat" in Windows path patterns:
+        # e.g. "users android desktop", "users camera desktop", "users amrit desktop"
+        (re.compile(r'\b(users|user)\s+(?:android|camera|amrit|amruth|amrath|amret|emrat|omrat|imrat|anrat|anrod|camrat|kamrat|am\s+rat|aim\s+rat|i[\'’]?m\s+rat|an\s+rod)\b', re.IGNORECASE), r'\1 amrat'),
+        (re.compile(r'\b(users)\s+(?:[^\\/\s]+(?:\s+[^\\/\s]+)?)\s+(desktop|downloads|documents|pictures|videos|music|onedrive)\b', re.IGNORECASE),
+         lambda m: f"{m.group(1)} amrat {m.group(2)}" if m.group(0).split()[1].lower() not in ("amrat", "public", "default", "all") else m.group(0)),
+        # Repair misheard "amrat" in file extensions:
+        # e.g. "android.py", "camera.py", "amrit.py", "am rat.py", "android py", "camera py"
+        (re.compile(r'\b(?:android|camera|amrit|amruth|amrath|amret|emrat|omrat|imrat|anrat|anrod|camrat|kamrat|am\s+rat|aim\s+rat|i[\'’]?m\s+rat)\s*(?:\.|\s+dot\s+|\s+)(py|txt|json|md)\b', re.IGNORECASE), r'amrat.\1'),
+        # Repair misheard "amrat" in editor open commands:
+        # e.g. "open android in vscode", "open camera in vscode", "open amrit in vscode", "open am rat in vscode"
+        (re.compile(r'\b(open|launch|show)\s+(?:the\s+)?(?:file\s+)?(?:android|camera|amrit|amruth|amrath|amret|emrat|omrat|imrat|anrat|anrod|camrat|kamrat|am\s+rat|aim\s+rat|i[\'’]?m\s+rat)\s+(?:in|inside|on)\s+vs\s*code\b', re.IGNORECASE), r'\1 amrat in vscode'),
     ]
 
     @classmethod
