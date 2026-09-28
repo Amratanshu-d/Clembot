@@ -40,8 +40,33 @@ class ActionRouter:
         try:
             # 1. Filesystem actions
             if act_type == "open_folder":
-                msg = self.fs.open_folder(action.path or "Downloads")
-                return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                raw_folder = (action.path or "Downloads").strip()
+                import re as _re
+                clean_folder = _re.sub(r'^(?:(?:the|my)\s+)?(?:folder|directory|project|workspace)\s+', '', raw_folder, flags=_re.IGNORECASE).strip() or raw_folder
+
+                # 1. System shell target (e.g. ::{...})
+                if clean_folder.startswith("::{") or clean_folder.startswith("shell:"):
+                    msg = self.fs.open_folder(clean_folder)
+                    return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+
+                # 2. Check if it exists in the active VS Code workspace
+                ws_folder = self.vscode.find_in_workspace(clean_folder, search_files=False, search_folders=True)
+                if ws_folder and ws_folder.is_dir():
+                    self.vscode.open_file(ws_folder)
+                    return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                        message=f"Opened folder '{ws_folder.name}' in VS Code.")
+
+                # 3. Regular filesystem folder resolution
+                try:
+                    msg = self.fs.open_folder(clean_folder)
+                    return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                except FileNotFoundError:
+                    found = self.search.find_first(clean_folder)
+                    if found and found.is_dir():
+                        msg = self.fs.open_folder(found)
+                        return ActionResult(action_id=action.id, action_type=act_type, success=True, message=f"Found and opened folder '{found.name}'.")
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message=f"I couldn't find folder '{clean_folder}'.")
 
             elif act_type == "open_file":
                 target_str = (action.path or "").strip()
@@ -52,26 +77,64 @@ class ActionRouter:
                     msg = self.apps.open_or_activate(target_str)
                     return ActionResult(action_id=action.id, action_type="open_app", success=True, message=msg)
 
-                # If the path has a file extension, go straight to filesystem — never fuzzy-match an app.
                 import re as _re
-                has_extension = bool(_re.search(r'\.[a-zA-Z0-9]{1,6}$', target_str))
+                clean_target = _re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', target_str, flags=_re.IGNORECASE).strip() or target_str
+
+                # Code file extensions that should open in VS Code if VS Code is running or active
+                code_exts = {
+                    ".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".json", ".txt",
+                    ".md", ".c", ".cpp", ".h", ".cs", ".java", ".rs", ".go", ".sh", ".bat",
+                    ".ps1", ".yaml", ".yml", ".xml", ".sql", ".ini", ".toml", ".env"
+                }
+
+                # 1. First check if it exists in the active VS Code workspace / active file folder
+                ws_match = self.vscode.find_in_workspace(clean_target)
+                if ws_match and ws_match.exists():
+                    self.vscode.open_file(ws_match)
+                    item_type = "folder" if ws_match.is_dir() else "file"
+                    return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                        message=f"Opened {item_type} '{ws_match.name}' in VS Code.")
+
+                # 2. Check if the target has a file extension or resolves on filesystem
+                has_extension = bool(_re.search(r'\.[a-zA-Z0-9]{1,6}$', clean_target))
                 if has_extension:
                     try:
-                        msg = self.fs.open_file(action.path)
-                        return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                        resolved_p = WindowsPathResolver.resolve(clean_target, context_base=context_base)
+                        if resolved_p and resolved_p.exists():
+                            if resolved_p.suffix.lower() in code_exts and (self.vscode.get_active_file() or self.vscode.get_workspace() or self.apps.is_running("vscode")):
+                                self.vscode.open_file(resolved_p)
+                                return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                                    message=f"Opened '{resolved_p.name}' in VS Code.")
+                            else:
+                                msg = self.fs.open_file(resolved_p)
+                                return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                        else:
+                            raise FileNotFoundError(f"File not found: {clean_target}")
                     except FileNotFoundError:
-                        found = self.search.find_first(target_str)
+                        found = self.search.find_first(clean_target)
                         if found and found.is_file():
-                            msg = self.fs.open_file(found)
-                            return ActionResult(action_id=action.id, action_type=act_type, success=True,
-                                                message=f"Found and opened '{found.name}'.")
+                            if found.suffix.lower() in code_exts and (self.vscode.get_active_file() or self.vscode.get_workspace() or self.apps.is_running("vscode")):
+                                self.vscode.open_file(found)
+                                return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                                    message=f"Found and opened '{found.name}' in VS Code.")
+                            else:
+                                msg = self.fs.open_file(found)
+                                return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                                    message=f"Found and opened '{found.name}'.")
                         return ActionResult(action_id=action.id, action_type=act_type, success=False,
-                                            message=f"I couldn't find '{target_str}' on your system.")
+                                            message=f"I couldn't find '{clean_target}' on your system.")
 
-                # No extension — could be an app name or folder; try the original cascade
+                # 3. No extension — could be a file without extension or an app name; try filesystem then app
                 try:
-                    msg = self.fs.open_file(action.path)
-                    return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                    resolved_p = WindowsPathResolver.resolve(clean_target, context_base=context_base)
+                    if resolved_p and resolved_p.exists() and resolved_p.is_file():
+                        if resolved_p.suffix.lower() in code_exts and (self.vscode.get_active_file() or self.vscode.get_workspace() or self.apps.is_running("vscode")):
+                            self.vscode.open_file(resolved_p)
+                            return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                                message=f"Opened '{resolved_p.name}' in VS Code.")
+                        msg = self.fs.open_file(resolved_p)
+                        return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
+                    raise FileNotFoundError()
                 except FileNotFoundError:
                     try:
                         msg = self.apps.open_or_activate(target_str)
@@ -117,19 +180,56 @@ class ActionRouter:
 
             # 2. Application & Window Control
             elif act_type == "open_app":
-                target = (action.app or "").strip()
-                # 1. Try launching or activating the application
-                try:
-                    msg = self.apps.open_or_activate(target)
-                    return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
-                except Exception as app_err:
-                    logger.debug(f"App catalog could not launch '{target}': {app_err}")
+                raw_target = (action.app or "").strip()
+                import re as _re
+                target = _re.sub(r'^(?:(?:the|my)\s+)?(?:folder|directory|project|workspace)\s+', '', raw_target, flags=_re.IGNORECASE).strip()
+                target = _re.sub(r'\s+(?:folder|directory|project|workspace)$', '', target, flags=_re.IGNORECASE).strip() or raw_target
 
-                # 2. Check if target is an existing folder or drive
+                # 1. Exact built-in or catalog match
+                norm_t = target.lower()
+                is_exact_app = False
+                try:
+                    if norm_t in self.apps.BUILTIN_APPS or any(norm_t in [a.lower() for a in entry.get("aliases", [])] for entry in self.apps.BUILTIN_APPS.values()):
+                        is_exact_app = True
+                    elif norm_t in ["explorer", "file explorer", "taskmgr", "task manager", "settings", "control", "cmd", "terminal", "powershell"]:
+                        is_exact_app = True
+                    else:
+                        with self.apps._lock:
+                            is_exact_app = self.apps._normalize(norm_t) in self.apps._catalog
+                except Exception:
+                    pass
+
+                if is_exact_app:
+                    try:
+                        msg = self.apps.open_or_activate(target)
+                        return ActionResult(action_id=action.id, action_type=act_type, success=True, message=str(msg))
+                    except Exception as app_err:
+                        logger.debug(f"Exact app launch failed: {app_err}")
+
+                # 2. Check if target is a file or folder in the active VS Code workspace / active directory
+                ws_match = self.vscode.find_in_workspace(target) or self.vscode.find_in_workspace(raw_target)
+                if ws_match and ws_match.exists():
+                    self.vscode.open_file(ws_match)
+                    item_type = "folder" if ws_match.is_dir() else "file"
+                    return ActionResult(action_id=action.id, action_type=act_type, success=True,
+                                        message=f"Opened {item_type} '{ws_match.name}' in VS Code.")
+
+                # 3. Try launching or activating the application with fuzzy matching
+                try:
+                    msg = self.apps.open_or_activate(raw_target)
+                    return ActionResult(action_id=action.id, action_type=act_type, success=True, message=str(msg))
+                except Exception as app_err:
+                    logger.debug(f"App catalog could not launch '{raw_target}': {app_err}")
+
+                # 3. Check if target is an existing folder or drive
                 try:
                     resolved_path = WindowsPathResolver.resolve(target, context_base=context_base)
                     if resolved_path and resolved_path.exists():
-                        if resolved_path.is_dir():
+                        code_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".json", ".txt", ".md"}
+                        if resolved_path.is_file() and resolved_path.suffix.lower() in code_exts and (self.vscode.get_active_file() or self.vscode.get_workspace() or self.apps.is_running("vscode")):
+                            self.vscode.open_file(resolved_path)
+                            msg = f"Opened '{resolved_path.name}' in VS Code."
+                        elif resolved_path.is_dir():
                             msg = self.fs.open_folder(resolved_path)
                         else:
                             msg = self.fs.open_file(resolved_path)
@@ -277,9 +377,43 @@ class ActionRouter:
                 return ActionResult(action_id=action.id, action_type=act_type, success=success, message=f"Jumped to line {line_num}.")
 
             elif act_type == "vscode_open_file":
-                target_p = WindowsPathResolver.resolve(action.path)
-                success = self.vscode.open_file(target_p)
-                return ActionResult(action_id=action.id, action_type=act_type, success=success, message=f"Opened '{target_p.name}' in VS Code.")
+                raw_target = (action.path or "").strip()
+                import re as _re
+                clean_target = _re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', raw_target, flags=_re.IGNORECASE).strip() or raw_target
+
+                # 1. Check workspace first
+                target_p = self.vscode.find_in_workspace(clean_target)
+
+                # 2. Path resolver fallback
+                if not target_p or not target_p.exists():
+                    target_p = WindowsPathResolver.resolve(clean_target, context_base=context_base)
+
+                # 3. Search fallback
+                if not target_p or not target_p.exists():
+                    found = self.search.find_first(clean_target)
+                    if found and found.exists():
+                        target_p = found
+
+                if target_p and target_p.exists():
+                    success = self.vscode.open_file(target_p)
+                    item_type = "folder" if target_p.is_dir() else "file"
+                    return ActionResult(action_id=action.id, action_type=act_type, success=success,
+                                        message=f"Opened {item_type} '{target_p.name}' in VS Code.")
+                else:
+                    return ActionResult(action_id=action.id, action_type=act_type, success=False,
+                                        message=f"I couldn't find '{clean_target}' in your VS Code workspace or files.")
+
+            elif act_type == "vscode_next_file":
+                success = self.vscode.next_file()
+                active = self.vscode.get_active_file()
+                name = active.name if active else "next file"
+                return ActionResult(action_id=action.id, action_type=act_type, success=success, message=f"Switched to {name} in VS Code.")
+
+            elif act_type == "vscode_prev_file":
+                success = self.vscode.previous_file()
+                active = self.vscode.get_active_file()
+                name = active.name if active else "previous file"
+                return ActionResult(action_id=action.id, action_type=act_type, success=success, message=f"Switched to {name} in VS Code.")
 
             elif act_type == "vscode_close_file":
                 msg = self.vscode.close_file(action.path)
@@ -295,6 +429,15 @@ class ActionRouter:
 
             elif act_type == "vscode_read_line":
                 line_num = action.line_number or 1
+                if action.path:
+                    p = WindowsPathResolver.resolve(action.path)
+                    if p and p.is_file():
+                        self.vscode.open_file(p, line_number=line_num)
+                    else:
+                        self.vscode.jump_to_line(line_num)
+                else:
+                    self.vscode.jump_to_line(line_num)
+
                 content = self.vscode.read_document()
                 if content:
                     lines = content.splitlines()
@@ -305,7 +448,7 @@ class ActionRouter:
                     else:
                         msg = f"Line {line_num} does not exist in this file."
                 else:
-                    msg = "Could not read the file. Make sure a file is open in VS Code."
+                    msg = f"Showing line {line_num} in VS Code."
                 return ActionResult(action_id=action.id, action_type=act_type, success=True, message=msg)
 
             elif act_type == "vscode_edit":

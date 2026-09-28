@@ -58,6 +58,66 @@ class TestFastCommandRouter(unittest.TestCase):
         self.assertEqual(plan.actions[0].type, "vscode_jump_line")
         self.assertEqual(plan.actions[0].line_number, 25)
 
+        plan = self.router.plan_for_command("jump to line forty two")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_jump_line")
+        self.assertEqual(plan.actions[0].line_number, 42)
+
+    def test_show_and_read_line(self):
+        # User reported: "show line 36"
+        plan = self.router.plan_for_command("show line 36")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 36)
+        self.assertIn("Showing line 36", plan.reply)
+
+        # Compound numbers: "show me line thirty six"
+        plan = self.router.plan_for_command("show me line thirty six")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 36)
+
+        # Synonyms: display, view
+        plan = self.router.plan_for_command("display line 10")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 10)
+
+        plan = self.router.plan_for_command("view line 15")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 15)
+
+        # Read line
+        plan = self.router.plan_for_command("read line 20")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 20)
+        self.assertIn("Reading line 20", plan.reply)
+
+        # With file
+        plan = self.router.plan_for_command("show line 50 in main.py")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 50)
+        self.assertEqual(plan.actions[0].path, "main.py")
+
+        # User reported Google STT corruptions: "Shoreline 22", "Shoreline 42"
+        plan = self.router.plan_for_command("shoreline 22")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 22)
+
+        plan = self.router.plan_for_command("shoreline 42")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 42)
+
+        plan = self.router.plan_for_command("showline 36")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.actions[0].type, "vscode_read_line")
+        self.assertEqual(plan.actions[0].line_number, 36)
+
     def test_question_and_distance_search(self):
         # User reported: "tell distance from satna to jabalpur"
         plan = self.router.plan_for_command("tell distance from satna to jabalpur")

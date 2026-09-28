@@ -253,8 +253,36 @@ class FastCommandRouter:
                 actions=[AgentAction(type="open_folder", path=f_name)]
             )
 
-        # Explicit folder: e.g. "open folder projects", "open the folder voiceps"
-        explicit_folder = re.search(r'^(?:open|show)\s+(?:the\s+)?(?:folder|directory)\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', cmd, re.IGNORECASE)
+        # Open in VS Code explicit directive
+        open_in_vscode = re.search(r'^(?:open|launch)\s+(.*?)\s+(?:in|inside|on)\s+vs\s*code[.!?]*$', cmd, re.IGNORECASE) or \
+                         re.search(r'^(?:open|launch)\s+(?:in|inside|on)\s+vs\s*code\s+(.*?)[.!?]*$', cmd, re.IGNORECASE)
+        if open_in_vscode:
+            target = open_in_vscode.group(1).strip()
+            return AgentPlan(
+                reply=f"Opening {target} in VS Code.",
+                actions=[AgentAction(type="vscode_open_file", path=target)]
+            )
+
+        # Tab / File switching: "open next file", "next file", "switch file", "previous file"
+        next_file_m = re.search(r'^(?:open\s+)?(?:the\s+)?(?:next|other|another)\s+file(?:\s+in\s+vscode)?[.!?]*$', lower) or \
+                      re.search(r'^(?:switch\s+(?:to\s+)?(?:next\s+)?file|switch\s+tab|next\s+tab|next\s+file)[.!?]*$', lower)
+        if next_file_m:
+            return AgentPlan(
+                reply="Switching to next file in VS Code.",
+                actions=[AgentAction(type="vscode_next_file")]
+            )
+
+        prev_file_m = re.search(r'^(?:open\s+)?(?:the\s+)?(?:previous|prev)\s+file(?:\s+in\s+vscode)?[.!?]*$', lower) or \
+                      re.search(r'^(?:switch\s+(?:to\s+)?(?:previous|prev)\s+file|prev\s+tab|previous\s+tab)[.!?]*$', lower)
+        if prev_file_m:
+            return AgentPlan(
+                reply="Switching to previous file in VS Code.",
+                actions=[AgentAction(type="vscode_prev_file")]
+            )
+
+        # Explicit folder: e.g. "open folder projects", "open the folder voiceps", "open practical folder"
+        explicit_folder = re.search(r'^(?:open|show)\s+(?:the\s+)?(?:folder|directory)\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', cmd, re.IGNORECASE) or \
+                          re.search(r'^(?:open|show)\s+(?:the\s+)?(.*?)\s+(?:folder|directory)[.!?]*$', cmd, re.IGNORECASE)
         if explicit_folder:
             f_name = explicit_folder.group(1).strip()
             return AgentPlan(
@@ -262,11 +290,16 @@ class FastCommandRouter:
                 actions=[AgentAction(type="open_folder", path=f_name)]
             )
 
-        # Explicit file: e.g. "open file notes.txt", "open the file resume.pdf"
-        explicit_file = re.search(r'^(?:open|show)\s+(?:the\s+)?file\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', cmd, re.IGNORECASE)
+        # Explicit file: e.g. "open file notes.txt", "open the file resume.pdf", "open my file"
+        explicit_file = re.search(r'^(?:open|show)\s+(?:the\s+)?file\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', cmd, re.IGNORECASE) or \
+                        re.search(r'^(?:open|show)\s+(?:the\s+)?(.*?\s+file)[.!?]*$', cmd, re.IGNORECASE)
         if explicit_file:
             f_name = explicit_file.group(1).strip()
             norm_f = f_name.lower().strip()
+            if norm_f in ["next", "other", "another", "next file", "other file", "another file"]:
+                return AgentPlan(reply="Switching to next file in VS Code.", actions=[AgentAction(type="vscode_next_file")])
+            if norm_f in ["previous", "prev", "previous file", "prev file"]:
+                return AgentPlan(reply="Switching to previous file in VS Code.", actions=[AgentAction(type="vscode_prev_file")])
             # Intercept shell targets if spoken as "open file explorer" etc.
             if norm_f in ["explorer", "file explorer"]:
                 return AgentPlan(reply="Opening File Explorer.", actions=[AgentAction(type="open_app", app="explorer")])
@@ -284,10 +317,10 @@ class FastCommandRouter:
                 actions=[AgentAction(type="open_file", path=f_name)]
             )
 
-        # Files with extensions: e.g. "open notes.txt", "open report.pdf", "open script.py"
+        # Files with extensions: e.g. "open notes.txt", "open report.pdf", "open script.py", "open class,object.py"
         # Generic: match ANY extension (1-6 alphanumeric chars) — this is safe because by this
         # point known folder names and app names have already been handled above.
-        file_ext_match = re.search(r'^open\s+([\w\-. ]+\.[a-zA-Z0-9]{1,6})[.!?]*$', cmd, re.IGNORECASE)
+        file_ext_match = re.search(r'^open\s+([\w\-., ()]+\.[a-zA-Z0-9]{1,6})[.!?]*$', cmd, re.IGNORECASE)
         if file_ext_match:
             f_target = file_ext_match.group(1).strip()
             return AgentPlan(
@@ -331,21 +364,18 @@ class FastCommandRouter:
 
         # 12. Code Editor / VS Code navigation & line jumps
         # e.g. "Open app.py in VS Code", "Open my Django project in VS Code", "Go to line 25"
-        jump_line = re.search(r'^(?:go\s+to|jump\s+to|navigate\s+to)\s+line\s+(\d+)$', cmd, re.IGNORECASE)
+        # 12. Code Editor / VS Code navigation & line jumps
+        # e.g. "Open app.py in VS Code", "Open my Django project in VS Code", "Go to line 25", "jump to line thirty six"
+        jump_line = re.search(r'^(?:go\s+to|jump\s+to|navigate\s+to)\s+line\s+(.+?)[.!?]*$', cmd, re.IGNORECASE)
         if jump_line:
-            line_num = int(jump_line.group(1))
-            return AgentPlan(
-                reply=f"Going to line {line_num}.",
-                actions=[AgentAction(type="vscode_jump_line", line_number=line_num)]
-            )
+            from app.editor.code_edit_parser import _parse_line_number
+            line_num = _parse_line_number(jump_line.group(1).strip())
+            if line_num:
+                return AgentPlan(
+                    reply=f"Going to line {line_num}.",
+                    actions=[AgentAction(type="vscode_jump_line", line_number=line_num)]
+                )
 
-        open_in_vscode = re.search(r'^(?:open\s+(.*?)\s+in\s+vs\s*code)[.!?]*$', cmd, re.IGNORECASE)
-        if open_in_vscode:
-            target = open_in_vscode.group(1).strip()
-            return AgentPlan(
-                reply=f"Opening {target} in VS Code.",
-                actions=[AgentAction(type="vscode_open_file", path=target)]
-            )
 
         # 13. Code editing & reading — all patterns handled by CodeEditParser
         # Examples:
@@ -360,22 +390,39 @@ class FastCommandRouter:
         #   "uncomment line 7"
         #   "rename function foo to bar"
         #   "add try except at line 12"
-        #   "read line 6" / "show me line 6" / "what is on line 6"
+        #   "read line 6" / "show me line 6" / "what is on line 6" / "show line 36"
         #   "save this file"
 
-        # Read/show a single line
+        # Read / show a single line with optional file:
+        # e.g. "show line 36", "shoreline 22", "show me line thirty six", "read line 10 in main.py"
+        read_line_with_file = re.search(
+            r'^(?:read(?:\s+me)?|show(?:\s+me)?|shoreline|showline|sureline|display|view|what(?:\'s|\s+is)\s+(?:on|at))\s+(?:line\s+)?(.+?)\s+in\s+([^\s]+\.[a-zA-Z0-9]{1,6})[.!?]*$',
+            cmd, re.IGNORECASE
+        )
+        if read_line_with_file:
+            from app.editor.code_edit_parser import _parse_line_number
+            ln = _parse_line_number(read_line_with_file.group(1).strip())
+            target_f = read_line_with_file.group(2).strip()
+            if ln:
+                verb_reply = "Showing" if re.search(r'\b(?:show|display|view|shoreline|showline)\b', lower) else "Reading"
+                return AgentPlan(
+                    reply=f"{verb_reply} line {ln} of {target_f}.",
+                    actions=[AgentAction(type="vscode_read_line", line_number=ln, path=target_f)]
+                )
+
         read_line = re.search(
-            r'^(?:read|show(?:\s+me)?|what(?:\'s|\s+is)\s+(?:on|at))\s+line\s+(\w+)[.!?]*$',
+            r'^(?:read(?:\s+me)?|show(?:\s+me)?|shoreline|showline|sureline|display|view|what(?:\'s|\s+is)\s+(?:on|at))\s+(?:line\s+)?(.+?)[.!?]*$',
             cmd, re.IGNORECASE
         )
         if read_line:
-            ln_raw = read_line.group(1).strip()
             from app.editor.code_edit_parser import _parse_line_number
-            ln = _parse_line_number(ln_raw) or 1
-            return AgentPlan(
-                reply=f"Reading line {ln}.",
-                actions=[AgentAction(type="vscode_read_line", line_number=ln)]
-            )
+            ln = _parse_line_number(read_line.group(1).strip())
+            if ln:
+                verb_reply = "Showing" if re.search(r'\b(?:show|display|view|shoreline|showline)\b', lower) else "Reading"
+                return AgentPlan(
+                    reply=f"{verb_reply} line {ln}.",
+                    actions=[AgentAction(type="vscode_read_line", line_number=ln)]
+                )
 
         # Save this file — matches:
         #   "save" / "save this file" / "save the file" / "save file"
@@ -401,16 +448,17 @@ class FastCommandRouter:
             )
 
         # 14. Project / Workspace Opening
-        # e.g. "Open my Django project", "Open project voiceps"
-        open_proj = re.search(r'^(?:open|launch)\s+(?:my\s+)?(.*?)\s+(?:project|workspace|repository|repo)[.!?]*$', lower)
+        # e.g. "Open my Django project", "Open project voiceps", "Open project practical"
+        open_proj = re.search(r'^(?:open|launch)\s+(?:my\s+)?(.*?)\s+(?:project|workspace|repository|repo)[.!?]*$', lower) or \
+                    re.search(r'^(?:open|launch)\s+(?:my\s+)?(?:project|workspace|repository|repo)\s+(.*?)[.!?]*$', lower)
         if open_proj:
             proj_name = open_proj.group(1).strip()
             if llm_active:
                 # Allow LLM with full context to locate the workspace and open it
                 return None
             return AgentPlan(
-                reply=f"Looking for {proj_name} project.",
-                actions=[AgentAction(type="find_file", query=proj_name)]
+                reply=f"Opening {proj_name}.",
+                actions=[AgentAction(type="open_folder", path=proj_name)]
             )
 
         # 15. App launching & intelligent opening

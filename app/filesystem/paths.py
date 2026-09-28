@@ -150,6 +150,7 @@ class WindowsPathResolver:
         active_base = base_context or context_base
         raw_clean = raw.strip()
         lower = raw_clean.lower()
+        clean_target = re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', raw_clean, flags=re.IGNORECASE).strip() or raw_clean
 
         standard_folders = cls.get_standard_folders()
 
@@ -192,6 +193,18 @@ class WindowsPathResolver:
             cand = active_base / raw_clean
             if cand.exists():
                 return cand
+            cand_clean = active_base / clean_target
+            if cand_clean.exists():
+                return cand_clean
+
+        # Check active VS Code workspace and active file context
+        try:
+            from app.editor.vscode_adapter import VSCodeAdapter
+            ws_match = VSCodeAdapter().find_in_workspace(clean_target)
+            if ws_match and ws_match.exists():
+                return ws_match
+        except Exception as e:
+            logger.debug(f"VS Code workspace resolution skipped: {e}")
 
         # Check active Explorer window if item exists there
         explorer_path = cls.get_active_explorer_path()
@@ -199,6 +212,9 @@ class WindowsPathResolver:
             cand = explorer_path / raw_clean
             if cand.exists():
                 return cand
+            cand_clean = explorer_path / clean_target
+            if cand_clean.exists():
+                return cand_clean
 
         # Check standard user locations if file exists there
         for folder_key in ["Desktop", "Downloads", "Documents"]:
@@ -206,6 +222,9 @@ class WindowsPathResolver:
                 cand = standard_folders[folder_key] / raw_clean
                 if cand.exists():
                     return cand
+                cand_clean = standard_folders[folder_key] / clean_target
+                if cand_clean.exists():
+                    return cand_clean
 
         # Default fallback: active_base / raw_clean (or Desktop / raw_clean)
         if active_base and active_base.is_dir():

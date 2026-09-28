@@ -18,7 +18,7 @@ import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -68,7 +68,15 @@ def _get_vscode_workspace_from_storage() -> Optional[Path]:
             last = ws_state.get("lastActiveWindow", {})
             folder_uri = last.get("folder") or last.get("workspace", {}).get("configPath")
             if folder_uri:
-                return _uri_to_path(folder_uri)
+                p = _uri_to_path(folder_uri)
+                if p and p.is_dir():
+                    return p
+            for win in ws_state.get("openedWindows", []):
+                f_uri = win.get("folder") or win.get("workspace", {}).get("configPath")
+                if f_uri:
+                    p = _uri_to_path(f_uri)
+                    if p and p.is_dir():
+                        return p
         except Exception as e:
             logger.debug(f"Failed to parse VS Code storage.json at {storage}: {e}")
 
@@ -226,6 +234,17 @@ def _resolve_from_vscdb() -> Optional[Path]:
                                     logger.info(f"Resolved active VS Code file from state.vscdb: {fspath}")
                                     p = Path(fspath)
                                     VSCodeAdapter._cached_file = p
+                                    ws_json = d / "workspace.json"
+                                    if ws_json.is_file():
+                                        try:
+                                            wdata = json.loads(ws_json.read_text(encoding="utf-8", errors="replace"))
+                                            w_uri = wdata.get("folder") or wdata.get("workspace", {}).get("configPath")
+                                            if w_uri:
+                                                wp = _uri_to_path(w_uri)
+                                                if wp and wp.is_dir():
+                                                    VSCodeAdapter._cached_workspace = wp
+                                        except Exception:
+                                            pass
                                     return p
 
                 # 2. Try history.entries (recently focused files list)
@@ -241,6 +260,17 @@ def _resolve_from_vscdb() -> Optional[Path]:
                                 conn.close()
                                 logger.info(f"Resolved active VS Code file from history.entries: {p}")
                                 VSCodeAdapter._cached_file = p
+                                ws_json = d / "workspace.json"
+                                if ws_json.is_file():
+                                    try:
+                                        wdata = json.loads(ws_json.read_text(encoding="utf-8", errors="replace"))
+                                        w_uri = wdata.get("folder") or wdata.get("workspace", {}).get("configPath")
+                                        if w_uri:
+                                            wp = _uri_to_path(w_uri)
+                                            if wp and wp.is_dir():
+                                                VSCodeAdapter._cached_workspace = wp
+                                    except Exception:
+                                        pass
                                 return p
 
                 conn.close()
@@ -369,6 +399,278 @@ class VSCodeAdapter(EditorAdapter):
             return Path(ipc_server.state.workspace_folder)
         return _get_vscode_workspace_from_storage() or VSCodeAdapter._cached_workspace
 
+    def get_workspace_roots(self) -> List[Path]:
+        """Returns candidate workspace roots in priority order (deduplicated)."""
+        roots: List[Path] = []
+        active_f = self.get_active_file()
+        if active_f and active_f.parent.is_dir():
+            roots.append(active_f.parent)
+
+        ws = self.get_workspace()
+        if ws and ws.is_dir() and ws not in roots:
+            roots.append(ws)
+
+        if VSCodeAdapter._cached_workspace and VSCodeAdapter._cached_workspace.is_dir() and VSCodeAdapter._cached_workspace not in roots:
+            roots.append(VSCodeAdapter._cached_workspace)
+
+        if active_f and active_f.parent.parent.is_dir() and active_f.parent.parent not in roots:
+            if len(active_f.parent.parent.parts) > 1:
+                roots.append(active_f.parent.parent)
+
+        if VSCodeAdapter._cached_file and VSCodeAdapter._cached_file.parent.is_dir() and VSCodeAdapter._cached_file.parent not in roots:
+            roots.append(VSCodeAdapter._cached_file.parent)
+
+        return roots
+
+    def get_open_or_recent_files(self) -> List[Path]:
+        """Returns existing file paths from VS Code history and workspace tab database."""
+        appdata = os.environ.get("APPDATA", "")
+        if not appdata:
+            return []
+        results: List[Path] = []
+        seen = set()
+        for variant in ("Code", "Code - Insiders", "VSCodium"):
+            ws_root = Path(appdata) / variant / "User" / "workspaceStorage"
+            if not ws_root.is_dir():
+                continue
+            for d in ws_root.glob("*"):
+                db_path = d / "state.vscdb"
+                if not db_path.is_file():
+                    continue
+                try:
+                    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.5)
+                    cur = conn.cursor()
+                    cur.execute("SELECT value FROM ItemTable WHERE key = 'history.entries'")
+                    row = cur.fetchone()
+                    if row:
+                        entries = json.loads(row[0])
+                        for item in entries:
+                            res = item.get("editor", {}).get("resource", "")
+                            if res:
+                                p = _uri_to_path(res)
+                                if p and p.is_file() and p not in seen:
+                                    seen.add(p)
+                                    results.append(p)
+                    conn.close()
+                except Exception:
+                    pass
+        return results
+
+    def get_sibling_files(self) -> List[Path]:
+        """Returns list of accessible files in the same directory as the active file."""
+        active_f = self.get_active_file()
+        if not active_f or not active_f.parent.is_dir():
+            return []
+        files: List[Path] = []
+        try:
+            for item in sorted(active_f.parent.iterdir()):
+                if item.is_file() and not item.name.startswith(".") and not item.name.endswith(".bak"):
+                    files.append(item)
+        except Exception:
+            pass
+        return files
+
+    def find_in_workspace(
+        self,
+        target: Union[str, Path],
+        search_files: bool = True,
+        search_folders: bool = True,
+    ) -> Optional[Path]:
+        """
+        Locates a file or folder inside the active VS Code workspace or active directory.
+        Checks:
+          1. Direct child of active file's directory (sibling)
+          2. Direct child of workspace root
+          3. Exact / stem match against VS Code open/recent files
+          4. Depth-limited recursive walk of workspace roots
+        Supports:
+          - Spoken prefixes & suffixes ("the file", "practical folder", "my file")
+          - Normalization ignoring spaces, hyphens, underscores, dots, case
+          - Stem matching and metaphone phonetic matching
+          - Fuzzy similarity
+        """
+        if isinstance(target, Path):
+            if target.exists():
+                return target
+            target = str(target)
+
+        raw_clean = target.strip("'\" ").strip()
+        if not raw_clean:
+            return None
+
+        # Check if already an existing absolute path
+        try:
+            direct_p = Path(raw_clean)
+            if direct_p.is_absolute() and direct_p.exists():
+                return direct_p
+        except Exception:
+            pass
+
+        import jellyfish
+        from rapidfuzz import fuzz
+
+        def _normalize_name(s: str) -> str:
+            return re.sub(r'[\s_\-.,]+', '', s.lower())
+
+        cleaned_variants: List[str] = []
+        c = raw_clean
+        c = re.sub(r'(\w+)\s*\.\s*([a-zA-Z0-9]{1,6})\b', r'\1.\2', c)
+        c = re.sub(r'\b(\w+)\s+dot\s+([a-zA-Z0-9]{1,6})\b', r'\1.\2', c)
+        cleaned_variants.append(c)
+
+        c_noprefix = re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', c, flags=re.IGNORECASE).strip()
+        if c_noprefix and c_noprefix not in cleaned_variants:
+            cleaned_variants.append(c_noprefix)
+
+        c_nosuffix = re.sub(r'\s+(?:folder|directory|project|workspace)$', '', c, flags=re.IGNORECASE).strip()
+        if c_nosuffix and c_nosuffix not in cleaned_variants:
+            cleaned_variants.append(c_nosuffix)
+
+        c_both = re.sub(r'^(?:(?:the|my)\s+)?(?:file|folder|directory|project|workspace)\s+', '', c_nosuffix, flags=re.IGNORECASE).strip()
+        if c_both and c_both not in cleaned_variants:
+            cleaned_variants.append(c_both)
+
+        c_nofile = re.sub(r'\s+file$', '', c, flags=re.IGNORECASE).strip()
+        if c_nofile and c_nofile not in cleaned_variants:
+            cleaned_variants.append(c_nofile)
+
+        roots = self.get_workspace_roots()
+
+        for clean in cleaned_variants:
+            has_ext = bool(re.search(r'\.[a-zA-Z0-9]{1,6}$', clean))
+            clean_ext = Path(clean).suffix.lower() if has_ext else ""
+            allow_folders = search_folders and not has_ext
+            allow_files = search_files
+
+            norm_clean = _normalize_name(clean)
+            stem_clean = _normalize_name(Path(clean).stem)
+            clean_meta = jellyfish.metaphone(Path(clean).stem) if Path(clean).stem else None
+
+            # Step 1: Direct child of roots (exact and case/whitespace-insensitive)
+            for root in roots:
+                if not root or not root.is_dir():
+                    continue
+                cand = root / clean
+                if cand.exists():
+                    if (cand.is_file() and allow_files) or (cand.is_dir() and allow_folders):
+                        return cand
+
+                try:
+                    for child in root.iterdir():
+                        c_norm = _normalize_name(child.name)
+                        c_stem_norm = _normalize_name(child.stem)
+                        c_ext = child.suffix.lower()
+                        ext_compatible = (not has_ext) or (c_ext == clean_ext)
+
+                        if (c_norm == norm_clean or (not has_ext and c_stem_norm == norm_clean)):
+                            if (child.is_file() and allow_files) or (child.is_dir() and allow_folders):
+                                return child
+                        if ext_compatible and clean_meta and jellyfish.metaphone(child.stem) == clean_meta:
+                            if (child.is_file() and allow_files) or (child.is_dir() and allow_folders):
+                                return child
+                        if ext_compatible and fuzz.ratio(c_stem_norm, stem_clean) >= 85:
+                            if (child.is_file() and allow_files) or (child.is_dir() and allow_folders):
+                                return child
+                except (PermissionError, OSError):
+                    pass
+
+            # Step 2: Bounded walk within workspace roots (depth <= 4)
+            ignored = {"node_modules", ".git", ".vscode", "__pycache__", "venv", "myenv", ".venv", "env", "appdata", "dist", "build"}
+
+            for root in roots:
+                if not root or not root.is_dir():
+                    continue
+                root_str = str(root)
+                try:
+                    for dirpath, dirnames, filenames in os.walk(root_str):
+                        depth = dirpath.replace(root_str, "").count(os.sep)
+                        dirnames[:] = [d for d in dirnames if d.lower() not in ignored and not d.startswith(".")]
+
+                        if allow_folders and depth > 0:
+                            d_name = os.path.basename(dirpath)
+                            if _normalize_name(d_name) == norm_clean or fuzz.ratio(_normalize_name(d_name), norm_clean) >= 90:
+                                return Path(dirpath)
+
+                        if allow_files:
+                            for fn in filenames:
+                                fn_norm = _normalize_name(fn)
+                                fn_stem_norm = _normalize_name(Path(fn).stem)
+                                fn_ext = Path(fn).suffix.lower()
+                                ext_compatible = (not has_ext) or (fn_ext == clean_ext)
+
+                                if fn_norm == norm_clean or (not has_ext and fn_stem_norm == norm_clean):
+                                    return Path(dirpath) / fn
+                                if ext_compatible and clean_meta and jellyfish.metaphone(Path(fn).stem) == clean_meta and fuzz.ratio(fn_stem_norm, stem_clean) >= 70:
+                                    return Path(dirpath) / fn
+                                if ext_compatible and fuzz.ratio(fn_stem_norm, stem_clean) >= 88:
+                                    return Path(dirpath) / fn
+
+                        if depth >= 4:
+                            dirnames.clear()
+                except (PermissionError, OSError):
+                    pass
+
+            # Step 3: Open or recent files in VS Code (fallback if not found in workspace roots)
+            if allow_files:
+                for rf in self.get_open_or_recent_files():
+                    rf_norm = _normalize_name(rf.name)
+                    rf_stem_norm = _normalize_name(rf.stem)
+                    rf_ext = rf.suffix.lower()
+                    ext_compatible = (not has_ext) or (rf_ext == clean_ext)
+
+                    if rf_norm == norm_clean or (not has_ext and rf_stem_norm == norm_clean):
+                        return rf
+                    if ext_compatible and clean_meta and jellyfish.metaphone(rf.stem) == clean_meta and fuzz.ratio(rf_stem_norm, stem_clean) >= 70:
+                        return rf
+                    if ext_compatible and fuzz.ratio(rf_stem_norm, stem_clean) >= 85:
+                        return rf
+
+        return None
+
+    def open_folder(self, folder_path: Path) -> bool:
+        """Opens a folder in VS Code, activating the window."""
+        try:
+            code_bin = self._get_code_cli()
+            subprocess.Popen([code_bin, "--reuse-window", str(folder_path)], shell=True)
+            VSCodeAdapter._cached_workspace = folder_path
+            try:
+                from app.windows.apps import WindowsAppCatalog
+                WindowsAppCatalog().activate_running_window("vscode")
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logger.error(f"Failed to open folder {folder_path} in VS Code: {e}")
+            return False
+
+    def next_file(self) -> bool:
+        """Switches to the next editor tab in VS Code (Ctrl+PageDown)."""
+        try:
+            from app.windows.apps import WindowsAppCatalog
+            WindowsAppCatalog().activate_running_window("vscode")
+            from app.automation.input_adapter import WindowsInputAdapter
+            import time
+            time.sleep(0.05)
+            WindowsInputAdapter.hotkey(["ctrl", "pagedown"])
+            return True
+        except Exception as e:
+            logger.error(f"Failed to switch to next file: {e}")
+            return False
+
+    def previous_file(self) -> bool:
+        """Switches to the previous editor tab in VS Code (Ctrl+PageUp)."""
+        try:
+            from app.windows.apps import WindowsAppCatalog
+            WindowsAppCatalog().activate_running_window("vscode")
+            from app.automation.input_adapter import WindowsInputAdapter
+            import time
+            time.sleep(0.05)
+            WindowsInputAdapter.hotkey(["ctrl", "pageup"])
+            return True
+        except Exception as e:
+            logger.error(f"Failed to switch to previous file: {e}")
+            return False
+
     # ------------------------------------------------------------------
     # Document content
     # ------------------------------------------------------------------
@@ -393,7 +695,36 @@ class VSCodeAdapter(EditorAdapter):
     # Editor commands
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _get_code_cli() -> str:
+        """Resolves the executable path to code.cmd or code.exe for reliable CLI execution."""
+        try:
+            from app.windows.apps import WindowsAppCatalog
+            exe_path, _ = WindowsAppCatalog().find_executable("vscode")
+            if exe_path:
+                return exe_path
+        except Exception:
+            pass
+        return "code"
+
     def jump_to_line(self, line_number: int) -> bool:
+        """
+        Jumps to and reveals a line in VS Code.
+        Layer 1: IPC extension (in-process revealRange in center).
+        Layer 2: CLI code --reuse-window --goto <file>:<line>.
+        Layer 3: Keyboard automation fallback (Ctrl+G -> line_number -> Enter).
+        Also ensures the VS Code window is activated and brought to the foreground.
+        """
+        # Ensure VS Code window is visible and focused first so jump and scroll are immediately visible
+        try:
+            from app.windows.apps import WindowsAppCatalog
+            WindowsAppCatalog().activate_running_window("vscode")
+        except Exception:
+            pass
+
+        jumped = False
+
+        # Layer 1: IPC extension
         if self.is_available():
             import uuid
             res = _ipc_post("/vscode/enqueue_command", {
@@ -401,31 +732,71 @@ class VSCodeAdapter(EditorAdapter):
                 "params": {"line_number": line_number}
             })
             if res.get("success"):
-                return True
+                jumped = True
+                logger.info(f"Jumped to line {line_number} via VS Code IPC extension.")
 
-        active_file = self.get_active_file()
-        if active_file:
+        # Layer 2: CLI code --reuse-window --goto <file>:<line>
+        if not jumped:
+            active_file = self.get_active_file()
+            if active_file:
+                try:
+                    code_bin = self._get_code_cli()
+                    subprocess.Popen([code_bin, "--reuse-window", "--goto",
+                                      f"{active_file}:{line_number}"], shell=True)
+                    jumped = True
+                    logger.info(f"Jumped to line {line_number} of {active_file.name} via CLI.")
+                except Exception as e:
+                    logger.error(f"CLI jump failed: {e}")
+
+        # Layer 3: Keyboard automation fallback (Ctrl+G -> line_number -> Enter)
+        if not jumped:
             try:
-                subprocess.Popen(["code", "--reuse-window", "--goto",
-                                  f"{active_file}:{line_number}"], shell=True)
-                return True
+                from app.windows.apps import WindowsAppCatalog
+                WindowsAppCatalog().activate_running_window("vscode")
+                import time
+                from app.automation.input_adapter import WindowsInputAdapter
+                time.sleep(0.05)
+                WindowsInputAdapter.hotkey(["ctrl", "g"])
+                time.sleep(0.08)
+                WindowsInputAdapter.type_text(str(line_number))
+                time.sleep(0.05)
+                WindowsInputAdapter.press_key("enter")
+                jumped = True
+                logger.info(f"Jumped to line {line_number} via Ctrl+G hotkey.")
             except Exception as e:
-                logger.error(f"CLI jump failed: {e}")
-        return False
+                logger.warning(f"Failed to send Ctrl+G: {e}")
+
+        # Ensure VS Code window is visible and focused so the user actually sees the line
+        try:
+            from app.windows.apps import WindowsAppCatalog
+            WindowsAppCatalog().activate_running_window("vscode")
+        except Exception:
+            pass
+
+        return jumped
 
     def open_file(self, file_path: Path, line_number: Optional[int] = None) -> bool:
         """
         Opens / reloads a file in VS Code using --reuse-window so we don't
         spawn a second window after every programmatic edit.
+        If file_path is a directory, opens the directory as a workspace.
         """
+        if file_path and file_path.is_dir():
+            return self.open_folder(file_path)
         try:
-            cmd = ["code", "--reuse-window"]
+            code_bin = self._get_code_cli()
+            cmd = [code_bin, "--reuse-window"]
             if line_number:
                 cmd.extend(["--goto", f"{file_path}:{line_number}"])
             else:
                 cmd.append(str(file_path))
             subprocess.Popen(cmd, shell=True)
             VSCodeAdapter._cached_file = file_path
+            try:
+                from app.windows.apps import WindowsAppCatalog
+                WindowsAppCatalog().activate_running_window("vscode")
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.error(f"Failed to open {file_path} in VS Code: {e}")

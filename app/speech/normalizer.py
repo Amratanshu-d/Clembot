@@ -86,6 +86,24 @@ class SpeechNormalizer:
         "shower": "show",
         "sho w": "show",
 
+        # "show line" / "shoreline" variants (Google STT frequently merges "show line" -> "shoreline")
+        "shoreline": "show line",
+        "shore line": "show line",
+        "shore-line": "show line",
+        "showline": "show line",
+        "shorline": "show line",
+        "sureline": "show line",
+        "sure line": "show line",
+        "shawline": "show line",
+        "shaw line": "show line",
+        "short line": "show line",
+        "shower line": "show line",
+        "showero line": "show line",
+        "showo line": "show line",
+        "showro line": "show line",
+        "show lion": "show line",
+        "show lying": "show line",
+
         # "delete" variants
         "delet": "delete",
         "deleet": "delete",
@@ -340,6 +358,9 @@ class SpeechNormalizer:
     # ── Regex patterns for post-homophone token repair ────────────────────────
     # Each tuple: (compiled_pattern, replacement)
     _CODE_TOKEN_FIXES = [
+        # "shoreline" / "showline" / "sureline" → "show line"
+        (re.compile(r'\b(?:shoreline|showline|shorline|sureline|shawline)\b', re.IGNORECASE), 'show line'),
+        (re.compile(r'\b(?:shore|sure|shaw)[\s-]?line\b', re.IGNORECASE), 'show line'),
         # "show" garbled with extra syllables: showero, showo, showro, showra …
         (re.compile(r'\bshow[aeiou]?r?[aeiou]{0,2}\b', re.IGNORECASE), 'show'),
         # "delete" garbled: deletea, deleate, daleet …
@@ -364,10 +385,13 @@ class SpeechNormalizer:
          }.get(m.group(2), m.group(2))),
         # "inline" joined before line number: "inline 43" → "in line 43", "inline43" → "in line 43"
         (re.compile(r'\binline\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b', re.IGNORECASE), r'in line \1'),
+        # Spaces around literal dot in file extensions: e.g. "main. py" → "main.py", "calc . py" → "calc.py"
+        (re.compile(r'\b(\w+)\s*\.\s*([a-zA-Z0-9]{1,6})\b', re.IGNORECASE),
+         lambda m: f'{m.group(1)}.{m.group(2)}'),
         # Generic spoken "dot" between word tokens → file extension separator
         # e.g. "amrit dot py" → "amrit.py", "notes dot cpp" → "notes.cpp"
         # Only fires when the right-hand word is a short extension (1–6 chars)
-        (re.compile(r'\b(\w+)\s+dot\s+([a-zA-Z]{1,6})\b', re.IGNORECASE),
+        (re.compile(r'\b(\w+)\s+dot\s+([a-zA-Z0-9]{1,6})\b', re.IGNORECASE),
          lambda m: f'{m.group(1)}.{m.group(2)}'),
     ]
 

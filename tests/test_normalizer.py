@@ -246,5 +246,37 @@ class TestDotNormalization(unittest.TestCase):
         self.assertIsInstance(result, str)
 
 
+class TestShorelineNormalization(unittest.TestCase):
+    """Tests for 'shoreline' / 'showline' → 'show line' STT homophone normalization."""
+
+    def setUp(self):
+        self.n = SpeechNormalizer()
+
+    def test_shoreline_digits(self):
+        """'Shoreline 22' → 'show line 22'"""
+        result = self.n.normalize_command("Shoreline 22")
+        self.assertEqual(result.lower(), "show line 22")
+
+    def test_shoreline_42(self):
+        """'Shoreline 42' → 'show line 42'"""
+        result = self.n.normalize_command("Shoreline 42")
+        self.assertEqual(result.lower(), "show line 42")
+
+    def test_shore_line_spaced(self):
+        """'shore line 15' → 'show line 15'"""
+        result = self.n.normalize_command("shore line 15")
+        self.assertEqual(result.lower(), "show line 15")
+
+    def test_showline_joined(self):
+        """'showline 36' → 'show line 36'"""
+        result = self.n.normalize_command("showline 36")
+        self.assertEqual(result.lower(), "show line 36")
+
+    def test_sureline(self):
+        """'sureline 10' → 'show line 10'"""
+        result = self.n.normalize_command("sureline 10")
+        self.assertEqual(result.lower(), "show line 10")
+
+
 if __name__ == "__main__":
     unittest.main()

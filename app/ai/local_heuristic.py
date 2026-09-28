@@ -131,9 +131,28 @@ class LocalHeuristicPlanner(AIProvider):
                 actions=[AgentAction(type="save")]
             )
 
+        # Open in VS Code — catches "open calc.py in vscode", "open practical in vscode", "open folder practical in vscode"
+        open_in_vscode_m = re.search(r'^(?:open|launch|start)\s+(.*?)\s+(?:in|inside|on)\s+vs\s*code[.!?]*$', lower) or \
+                           re.search(r'^(?:open|launch|start)\s+(?:in|inside|on)\s+vs\s*code\s+(.*?)[.!?]*$', lower)
+        if open_in_vscode_m:
+            target = open_in_vscode_m.group(1).strip()
+            return AgentPlan(
+                reply=f"Opening {target} in VS Code.",
+                actions=[AgentAction(type="vscode_open_file", path=target)]
+            )
+
+        # Open a folder or project: "open folder practical", "open project practical", "open directory practical"
+        open_folder_m = re.search(r'^(?:open|show)\s+(?:the\s+)?(?:folder|directory|project|workspace)\s+(?:called\s+|named\s+)?(.*?)[.!?]*$', lower)
+        if open_folder_m:
+            target_f = open_folder_m.group(1).strip()
+            return AgentPlan(
+                reply=f"Opening folder {target_f}.",
+                actions=[AgentAction(type="open_folder", path=target_f)]
+            )
+
         # Open a specific file by name — catches "open file main.py", "open notes.txt"
         open_file_m = re.search(
-            r'^(?:open|launch|start)\s+(?:(?:the|my)\s+)?(?:file\s+)?([^\s].+\.[a-zA-Z0-9]{1,6})\s*$',
+            r'^(?:open|launch|start)\s+(?:(?:the|my)\s+)?(?:file\s+)?([^\s].+?\.[a-zA-Z0-9]{1,6})\s*$',
             lower
         )
         if open_file_m:
@@ -143,11 +162,39 @@ class LocalHeuristicPlanner(AIProvider):
                 actions=[AgentAction(type="open_file", path=fname)]
             )
 
+        # Show / read line: e.g. "show line 36", "read line 12", "shoreline 22", "what's on line 5"
+        show_line_m = re.search(r'\b(?:show(?:\s+me)?|read(?:\s+me)?|shoreline|showline|sureline|display|view|what(?:\'s|\s+is)\s+(?:on|at))\s+(?:line\s+)?([a-zA-Z0-9\s-]+?)(?:\s+in\s+([^\s]+\.[a-zA-Z0-9]{1,6}))?[.!?]*$', lower)
+        if show_line_m:
+            from app.editor.code_edit_parser import _parse_line_number
+            ln = _parse_line_number(show_line_m.group(1).strip())
+            target_f = show_line_m.group(2).strip() if show_line_m.group(2) else None
+            if ln:
+                verb_reply = "Showing" if re.search(r'\b(?:show|display|view|shoreline|showline)\b', lower) else "Reading"
+                file_hint = f" of {target_f}" if target_f else ""
+                return AgentPlan(
+                    reply=f"{verb_reply} line {ln}{file_hint}.",
+                    actions=[AgentAction(type="vscode_read_line", line_number=ln, path=target_f)]
+                )
+
+        # Jump / navigate line: e.g. "go to line 25", "jump to line 40"
+        jump_line_m = re.search(r'\b(?:go\s+to|jump\s+to|navigate\s+to)\s+line\s+([a-zA-Z0-9\s-]+?)[.!?]*$', lower)
+        if jump_line_m:
+            from app.editor.code_edit_parser import _parse_line_number
+            ln = _parse_line_number(jump_line_m.group(1).strip())
+            if ln:
+                return AgentPlan(
+                    reply=f"Going to line {ln}.",
+                    actions=[AgentAction(type="vscode_jump_line", line_number=ln)]
+                )
+
         # Guard: If command has coding or editor intent (e.g. line numbers, edit verbs),
         # DO NOT fall back to Google Search.
         code_markers = [
             r'\bline\s*\d+\b',
             r'\binline\s*\d+\b',
+            r'\bshoreline\b',
+            r'\bshowline\b',
+            r'\bsureline\b',
             r'\bline\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b',
             r'\b(?:replace|overwrite|rewrite|delete\s+line|remove\s+line|comment\s+line|uncomment\s+line|insert\s+after|insert\s+before)\b',
         ]
